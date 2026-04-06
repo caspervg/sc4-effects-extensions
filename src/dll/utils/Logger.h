@@ -9,7 +9,7 @@ class Logger
 {
 public:
     static std::shared_ptr<spdlog::logger> Get();
-    static void Initialize(const std::string& logName = "SC4TemplateDll",
+    static void Initialize(const std::string& logName = "SC4EffectsExtensions",
                            const std::string& userDir = "",
                            bool logToFile = true);
     static void SetLevel(spdlog::level::level_enum logLevel);

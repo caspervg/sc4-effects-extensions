@@ -81,7 +81,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v6
         with:
-          name: SC4TemplateDll-${{ matrix.config }}-${{ github.sha }}
+          name: SC4EffectsExtensions-${{ matrix.config }}-${{ github.sha }}
           compression-level: 0
           path: |
-            ${{ matrix.binary_dir }}/src/dll/${{ matrix.config }}/SC4TemplateDll.dll
+            ${{ matrix.binary_dir }}/src/dll/${{ matrix.config }}/SC4EffectsExtensions.dll

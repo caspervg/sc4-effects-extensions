@@ -10,11 +10,11 @@ class HelloPanel;
 class cIGZMessage2;
 class cIGZCOM;
 
-class SC4TemplateDllDirector final : public cRZMessage2COMDirector
+class SC4EffectsExtensionsDirector final : public cRZMessage2COMDirector
 {
 public:
-    SC4TemplateDllDirector();
-    ~SC4TemplateDllDirector() override;
+    SC4EffectsExtensionsDirector();
+    ~SC4EffectsExtensionsDirector() override;
 
     [[nodiscard]] uint32_t GetDirectorID() const override;
     bool OnStart(cIGZCOM* pCOM) override;

@@ -1,6 +1,6 @@
-#include "SC4TemplateDllDirector.hpp"
+#include "SC4EffectsExtensionsDirector.hpp"
 
-static SC4TemplateDllDirector sDirector;
+static SC4EffectsExtensionsDirector sDirector;
 
 cRZCOMDllDirector* RZGetCOMDllDirector()
 {

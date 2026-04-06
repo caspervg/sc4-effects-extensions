@@ -12,7 +12,7 @@ namespace {
     constexpr auto kDefaultLogLevel = spdlog::level::info;
     constexpr bool kDefaultLogToFile = true;
     constexpr bool kDefaultStartWindowVisible = true;
-    constexpr auto kSectionName = "SC4TemplateDll";
+    constexpr auto kSectionName = "SC4EffectsExtensions";
 
     std::string ToLower(std::string value)
     {

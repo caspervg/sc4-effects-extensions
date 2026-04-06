@@ -80,6 +80,6 @@ void Logger::Shutdown()
 }
 
 std::shared_ptr<spdlog::logger> Logger::s_logger = nullptr;
-std::string Logger::s_logName = "SC4TemplateDll";
+std::string Logger::s_logName = "SC4EffectsExtensions";
 bool Logger::s_initialized = false;
 

@@ -7,9 +7,22 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent $PSScriptRoot
-$oldName = 'SC4TemplateDll'
-$oldSlug = 'sc4-dll-template'
-$newSlug = ($ProjectName -replace '([a-z0-9])([A-Z])', '$1-$2').ToLowerInvariant()
+
+function ConvertTo-KebabCase {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Value
+    )
+
+    return ($Value -replace '([a-z0-9])([A-Z])', '$1-$2').ToLowerInvariant()
+}
+
+$oldNames = @(
+    'SC4TemplateDll',
+    'SC4EffectsExtensions'
+) | Where-Object { $_ -ne $ProjectName } | Select-Object -Unique
+$oldSlugs = $oldNames | ForEach-Object { ConvertTo-KebabCase $_ }
+$newSlug = ConvertTo-KebabCase $ProjectName
 
 $extensions = @(
     '*.txt',
@@ -27,27 +40,74 @@ $extensions = @(
     '*.ps1'
 )
 
-Get-ChildItem -Path $root -Recurse -File -Include $extensions | ForEach-Object {
-    $content = Get-Content $_.FullName -Raw
-    $updated = $content.Replace($oldName, $ProjectName).Replace($oldSlug, $newSlug)
-    if ($updated -ne $content) {
-        Set-Content -Path $_.FullName -Value $updated -NoNewline
+$searchPaths = @(
+    (Join-Path $root '.github'),
+    (Join-Path $root 'cmake'),
+    (Join-Path $root 'dist'),
+    (Join-Path $root 'src'),
+    (Join-Path $root 'tools'),
+    (Join-Path $root 'CMakeLists.txt'),
+    (Join-Path $root 'CMakePresets.json'),
+    (Join-Path $root 'README.md'),
+    (Join-Path $root 'vcpkg.json')
+)
+
+$filesToUpdate = foreach ($path in $searchPaths) {
+    if (-not (Test-Path -LiteralPath $path)) {
+        continue
+    }
+
+    $item = Get-Item -LiteralPath $path
+    if ($item.PSIsContainer) {
+        Get-ChildItem -LiteralPath $path -Recurse -File -Include $extensions
+    }
+    else {
+        $item
     }
 }
 
-$renameTargets = @(
-    (Join-Path $root 'dist\SC4TemplateDll.ini'),
-    (Join-Path $root 'src\dll\SC4TemplateDll.def'),
-    (Join-Path $root 'src\dll\SC4TemplateDllDirector.hpp'),
-    (Join-Path $root 'src\dll\SC4TemplateDllDirector.cpp')
+$utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+
+$filesToUpdate | Select-Object -Unique FullName | ForEach-Object {
+    if ($_.FullName -eq $PSCommandPath) {
+        return
+    }
+
+    $content = [System.IO.File]::ReadAllText($_.FullName)
+    $updated = $content
+
+    foreach ($oldName in $oldNames) {
+        $updated = $updated.Replace($oldName, $ProjectName)
+    }
+
+    foreach ($oldSlug in $oldSlugs) {
+        $updated = $updated.Replace($oldSlug, $newSlug)
+    }
+
+    if ($updated -cne $content) {
+        [System.IO.File]::WriteAllText($_.FullName, $updated, $utf8NoBom)
+    }
+}
+
+$renameSearchPaths = @(
+    (Join-Path $root 'dist'),
+    (Join-Path $root 'src\dll')
 )
 
-foreach ($path in $renameTargets) {
-    if (Test-Path $path) {
-        $leaf = Split-Path -Leaf $path
-        $newLeaf = $leaf.Replace($oldName, $ProjectName)
-        if ($newLeaf -ne $leaf) {
-            Rename-Item -LiteralPath $path -NewName $newLeaf
+foreach ($basePath in $renameSearchPaths) {
+    if (-not (Test-Path -LiteralPath $basePath)) {
+        continue
+    }
+
+    Get-ChildItem -LiteralPath $basePath -File | ForEach-Object {
+        $newLeaf = $_.Name
+
+        foreach ($oldName in $oldNames) {
+            $newLeaf = $newLeaf.Replace($oldName, $ProjectName)
+        }
+
+        if ($newLeaf -cne $_.Name) {
+            Rename-Item -LiteralPath $_.FullName -NewName $newLeaf
         }
     }
 }

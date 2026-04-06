@@ -71,11 +71,11 @@ jobs:
           $packageDir = Join-Path "${{ github.workspace }}" "release-package"
           New-Item -ItemType Directory -Force -Path $packageDir | Out-Null
 
-          Copy-Item "cmake-build-release-visual-studio/src/dll/Release/SC4TemplateDll.dll" -Destination $packageDir
-          Copy-Item "dist/SC4TemplateDll.ini" -Destination $packageDir
+          Copy-Item "cmake-build-release-visual-studio/src/dll/Release/SC4EffectsExtensions.dll" -Destination $packageDir
+          Copy-Item "dist/SC4EffectsExtensions.ini" -Destination $packageDir
           Copy-Item "README.md" -Destination $packageDir
 
-          $archivePath = Join-Path "${{ github.workspace }}" ("SC4TemplateDll-" + $tag + "-win32.zip")
+          $archivePath = Join-Path "${{ github.workspace }}" ("SC4EffectsExtensions-" + $tag + "-win32.zip")
           if (Test-Path $archivePath) {
             Remove-Item -LiteralPath $archivePath
           }
