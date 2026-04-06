@@ -1,0 +1,94 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+env:
+  VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release-win32:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+          fetch-depth: 0
+          fetch-tags: true
+
+      - uses: actions/github-script@v8
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - name: Fetch full vcpkg history
+        shell: powershell
+        run: |
+          $isShallow = (git -C vendor/vcpkg rev-parse --is-shallow-repository).Trim()
+          if ($isShallow -eq "true") {
+            git -C vendor/vcpkg fetch --unshallow
+          }
+
+      - name: Bootstrap vcpkg
+        shell: powershell
+        run: |
+          .\vendor\vcpkg\bootstrap-vcpkg.bat
+          echo "VCPKG_ROOT=${{ github.workspace }}/vendor/vcpkg" >> $env:GITHUB_ENV
+
+      - name: Configure sc4-render-services
+        shell: powershell
+        working-directory: vendor/sc4-render-services
+        run: |
+          cmake -B build -G "Visual Studio 17 2022" -A Win32
+
+      - name: Build sc4-render-services imgui
+        shell: powershell
+        working-directory: vendor/sc4-render-services
+        run: |
+          cmake --build build --config Release --target imgui --parallel
+
+      - name: Build DLL
+        shell: powershell
+        run: |
+          cmake --preset vs2022-win32-release
+          cmake --build --preset vs2022-win32-release-build --parallel
+
+      - name: Package release assets
+        shell: powershell
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $packageDir = Join-Path "${{ github.workspace }}" "release-package"
+          New-Item -ItemType Directory -Force -Path $packageDir | Out-Null
+
+          Copy-Item "cmake-build-release-visual-studio/src/dll/Release/SC4TemplateDll.dll" -Destination $packageDir
+          Copy-Item "dist/SC4TemplateDll.ini" -Destination $packageDir
+          Copy-Item "README.md" -Destination $packageDir
+
+          $archivePath = Join-Path "${{ github.workspace }}" ("SC4TemplateDll-" + $tag + "-win32.zip")
+          if (Test-Path $archivePath) {
+            Remove-Item -LiteralPath $archivePath
+          }
+
+          Compress-Archive -Path (Join-Path $packageDir '*') -DestinationPath $archivePath
+          "RELEASE_ARCHIVE=$archivePath" >> $env:GITHUB_ENV
+
+      - name: Publish GitHub release
+        shell: powershell
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ github.ref_name }}" "$env:RELEASE_ARCHIVE" `
+            --repo "${{ github.repository }}" `
+            --title "${{ github.ref_name }}" `
+            --generate-notes

@@ -1,0 +1,87 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-win32:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - preset: vs2022-win32-debug
+            build_preset: vs2022-win32-debug-build
+            config: Debug
+            binary_dir: cmake-build-debug-visual-studio
+          - preset: vs2022-win32-release
+            build_preset: vs2022-win32-release-build
+            config: Release
+            binary_dir: cmake-build-release-visual-studio
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+          fetch-depth: 0
+          fetch-tags: true
+
+      - uses: actions/github-script@v8
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - name: Fetch full vcpkg history
+        shell: powershell
+        run: |
+          $isShallow = (git -C vendor/vcpkg rev-parse --is-shallow-repository).Trim()
+          if ($isShallow -eq "true") {
+            git -C vendor/vcpkg fetch --unshallow
+          }
+
+      - name: Bootstrap vcpkg
+        shell: powershell
+        run: |
+          .\vendor\vcpkg\bootstrap-vcpkg.bat
+          echo "VCPKG_ROOT=${{ github.workspace }}/vendor/vcpkg" >> $env:GITHUB_ENV
+
+      - name: Configure sc4-render-services
+        shell: powershell
+        working-directory: vendor/sc4-render-services
+        run: |
+          cmake -B build -G "Visual Studio 17 2022" -A Win32
+
+      - name: Build sc4-render-services imgui
+        shell: powershell
+        working-directory: vendor/sc4-render-services
+        run: |
+          cmake --build build --config ${{ matrix.config }} --target imgui --parallel
+
+      - name: Build DLL
+        shell: powershell
+        run: |
+          cmake --preset ${{ matrix.preset }}
+          cmake --build --preset ${{ matrix.build_preset }} --parallel
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: SC4TemplateDll-${{ matrix.config }}-${{ github.sha }}
+          compression-level: 0
+          path: |
+            ${{ matrix.binary_dir }}/src/dll/${{ matrix.config }}/SC4TemplateDll.dll

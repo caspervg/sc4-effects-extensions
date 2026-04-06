@@ -1,0 +1,27 @@
+{
+  "name": "sc4-dll-template",
+  "version-string": "0.1.0",
+  "builtin-baseline": "cc73782a88db48af17f8bfb8328d4cab3d4c246f",
+  "dependencies": [
+    {
+      "name": "pulzed-mini",
+      "version>=": "0.9.18"
+    },
+    {
+      "name": "spdlog",
+      "version>=": "1.17.0"
+    },
+    {
+      "name": "vcpkg-cmake",
+      "version>=": "2024-04-23"
+    },
+    {
+      "name": "vcpkg-cmake-config",
+      "version>=": "2024-05-23"
+    },
+    {
+      "name": "wil",
+      "version>=": "1.0.250325.1"
+    }
+  ]
+}
