@@ -25,12 +25,23 @@ class cISC4VisualEffect;
 class SC4EffectsExtensionsDirector final : public cRZMessage2COMDirector
 {
 public:
+    enum class EventSeverity {
+        Info,
+        Warning,
+        Error,
+    };
+
     struct EffectsCatalogSource {
         std::string label;
         ptrdiff_t vectorOffset = 0;
         size_t elementSize = 0;
         size_t stringOffset = 0;
         std::vector<std::string> names;
+    };
+
+    struct RecentEvent {
+        EventSeverity severity = EventSeverity::Info;
+        std::string text;
     };
 
     struct TrackedEffectState {
@@ -61,7 +72,7 @@ public:
     [[nodiscard]] bool IsEffectsHookInstalled() const;
     [[nodiscard]] size_t GetRecentEventCount() const;
     [[nodiscard]] size_t GetKnownEffectCount() const;
-    [[nodiscard]] std::vector<std::string> GetRecentEventsSnapshot() const;
+    [[nodiscard]] std::vector<RecentEvent> GetRecentEventsSnapshot() const;
     [[nodiscard]] std::vector<std::string> GetKnownEffectsSnapshot() const;
     [[nodiscard]] std::vector<EffectsCatalogSource> GetCatalogSourcesSnapshot() const;
     [[nodiscard]] std::string GetEffectsStatsString() const;
@@ -74,6 +85,7 @@ public:
     bool UpdateTrackedEffectTransform(const TrackedEffectState& state);
     void StopTrackedEffect();
     void RecordHookEvent(std::string_view line);
+    void RecordConsoleEvent(EventSeverity severity, std::string_view line);
     bool RefreshKnownEffects();
     bool DumpManagerMemory();
 
@@ -82,7 +94,7 @@ private:
     void PreCityShutdown_();
     static std::filesystem::path GetUserPluginsPath_();
     void InitializeLogger_();
-    void PushEventLine_(std::string line);
+    void PushEventLine_(std::string line, EventSeverity severity = EventSeverity::Info);
     void DumpKnownEffectsToLog_(const std::vector<std::string>& names, const std::vector<EffectsCatalogSource>& sources) const;
     bool RefreshKnownEffects_();
     bool EnsurePackedEffectsSaveSegment_();
@@ -100,7 +112,7 @@ private:
     bool effectsHookInstalled_ = false;
     bool packedEffectsSegmentRegistered_ = false;
     mutable std::mutex effectsMutex_;
-    std::deque<std::string> recentEvents_;
+    std::deque<RecentEvent> recentEvents_;
     std::vector<std::string> knownEffects_;
     std::vector<EffectsCatalogSource> catalogSources_;
     std::string lastSpawnStatus_;

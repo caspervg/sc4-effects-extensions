@@ -50,42 +50,34 @@ void EffectsPanel::OnRender()
     bool open = visible_;
     ImGui::SetNextWindowSize(ImVec2(620.0f, 720.0f), ImGuiCond_FirstUseEver);
     if (ImGui::Begin("SC4 Effects Console", &open)) {
-        RenderOverview_();
-        ImGui::Separator();
-        RenderManualSpawn_();
-        ImGui::Separator();
-        RenderTrackedEffect_();
-        ImGui::Separator();
-        RenderDebugTools_();
-        ImGui::Separator();
-        RenderCatalogSources_();
-        ImGui::Separator();
-        RenderEffectsList_();
-        ImGui::Separator();
-        RenderRecentEvents_();
+        if (ImGui::BeginTabBar("effects_tabs")) {
+            if (ImGui::BeginTabItem("Catalog")) {
+                RenderCatalogTab_();
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem("Console")) {
+                RenderConsoleTab_();
+                ImGui::EndTabItem();
+            }
+            ImGui::EndTabBar();
+        }
     }
     ImGui::End();
     visible_ = open;
 }
 
-void EffectsPanel::RenderOverview_() const
+void EffectsPanel::RenderCatalogTab_()
 {
-    ImGui::Text("DLL version: %s", versionLabel_.c_str());
-    ImGui::Text("Detected game version: %u", detectedGameVersion_);
-    ImGui::Text("City loaded: %s", director_.IsCityLoaded() ? "yes" : "no");
-    ImGui::Text("Legacy parser/resource hooks: %s", director_.IsEffectsHookInstalled() ? "installed" : "not installed");
-    ImGui::Text("Catalog entries: %zu", director_.GetKnownEffectCount());
-    ImGui::TextWrapped(
-        "This panel is manager-first now: it keeps the hook log as a console, but the main list is a validated runtime catalog probe against the live effects manager.");
+    RenderManualSpawn_();
+    ImGui::Separator();
+    RenderTrackedEffect_();
+    ImGui::Separator();
+    RenderEffectsList_();
+}
 
-    const std::string stats = director_.GetEffectsStatsString();
-    if (!stats.empty()) {
-        ImGui::Spacing();
-        ImGui::TextUnformatted("Manager stats:");
-        ImGui::BeginChild("effects_stats", ImVec2(0.0f, 110.0f), true);
-        ImGui::TextWrapped("%s", stats.c_str());
-        ImGui::EndChild();
-    }
+void EffectsPanel::RenderConsoleTab_()
+{
+    RenderRecentEvents_();
 }
 
 void EffectsPanel::RenderManualSpawn_()
@@ -168,19 +160,9 @@ void EffectsPanel::RenderTrackedEffect_()
     }
 }
 
-void EffectsPanel::RenderDebugTools_()
-{
-    ImGui::TextUnformatted("Debug tools");
-    if (ImGui::Button("Dump manager +0x98 hex")) {
-        director_.DumpManagerMemory();
-    }
-    ImGui::SameLine();
-    ImGui::TextUnformatted("Writes raw memory lines into the console below.");
-}
-
 void EffectsPanel::RenderEffectsList_()
 {
-    ImGui::TextUnformatted("Merged effects catalog");
+    ImGui::TextUnformatted("Catalog");
     ImGui::InputTextWithHint("##effect_filter", "Filter effects", filterInput_.data(), filterInput_.size());
     ImGui::SameLine();
     if (ImGui::Button("Refresh catalog")) {
@@ -203,37 +185,6 @@ void EffectsPanel::RenderEffectsList_()
     ImGui::EndChild();
 }
 
-void EffectsPanel::RenderCatalogSources_()
-{
-    const auto sources = director_.GetCatalogSourcesSnapshot();
-    ImGui::Text("Catalog sources (%zu)", sources.size());
-    ImGui::BeginChild("effects_catalog_sources", ImVec2(0.0f, 150.0f), true);
-    for (int i = 0; i < static_cast<int>(sources.size()); ++i) {
-        const auto& source = sources[i];
-        char label[160]{};
-        std::snprintf(label, sizeof(label), "%s (%zu)", source.label.c_str(), source.names.size());
-        if (ImGui::Selectable(label, selectedCatalogSource_ == i)) {
-            selectedCatalogSource_ = i;
-        }
-    }
-    ImGui::EndChild();
-
-    if (selectedCatalogSource_ >= 0 && selectedCatalogSource_ < static_cast<int>(sources.size())) {
-        const auto& source = sources[selectedCatalogSource_];
-        ImGui::TextWrapped("%s", source.label.c_str());
-        ImGui::BeginChild("effects_catalog_source_entries", ImVec2(0.0f, 160.0f), true);
-        for (const std::string& effectName : source.names) {
-            if (filterInput_[0] != '\0' && effectName.find(filterInput_.data()) == std::string::npos) {
-                continue;
-            }
-            if (ImGui::Selectable(effectName.c_str(), false)) {
-                std::snprintf(spawnInput_.data(), spawnInput_.size(), "%s", effectName.c_str());
-            }
-        }
-        ImGui::EndChild();
-    }
-}
-
 void EffectsPanel::RenderRecentEvents_()
 {
     ImGui::Text("Console (%zu lines)", director_.GetRecentEventCount());
@@ -244,9 +195,19 @@ void EffectsPanel::RenderRecentEvents_()
 
     const auto recentEvents = director_.GetRecentEventsSnapshot();
 
-    ImGui::BeginChild("recent_effect_events", ImVec2(0.0f, 180.0f), true);
-    for (const std::string& line : recentEvents) {
-        ImGui::TextWrapped("%s", line.c_str());
+    ImGui::BeginChild("recent_effect_events", ImVec2(0.0f, 0.0f), true);
+    for (const auto& event : recentEvents) {
+        if (event.severity == SC4EffectsExtensionsDirector::EventSeverity::Error) {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.93f, 0.28f, 0.24f, 1.0f));
+        } else if (event.severity == SC4EffectsExtensionsDirector::EventSeverity::Warning) {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.69f, 0.20f, 1.0f));
+        }
+
+        ImGui::TextWrapped("%s", event.text.c_str());
+
+        if (event.severity != SC4EffectsExtensionsDirector::EventSeverity::Info) {
+            ImGui::PopStyleColor();
+        }
     }
     ImGui::EndChild();
 }

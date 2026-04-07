@@ -30,12 +30,11 @@ private:
         float scale = 1.0f;
     };
 
-    void RenderOverview_() const;
+    void RenderCatalogTab_();
+    void RenderConsoleTab_();
     void RenderManualSpawn_();
     void RenderTrackedEffect_();
-    void RenderDebugTools_();
     void RenderEffectsList_();
-    void RenderCatalogSources_();
     void RenderRecentEvents_();
 
 private:
@@ -47,5 +46,4 @@ private:
     std::array<char, 128> filterInput_{};
     TrackedTransformUiState trackedState_{};
     bool autoApplyTrackedTransform_ = true;
-    int selectedCatalogSource_ = -1;
 };
