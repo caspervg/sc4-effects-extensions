@@ -22,6 +22,8 @@
 #include "cISC4City.h"
 #include "cISC4EffectsManager.h"
 #include "cISC4VisualEffect.h"
+#include "EffectsBootstrapHooks.hpp"
+#include "EffectsCatalogProbe.hpp"
 #include "cRZBaseString.h"
 #include "panels/EffectsPanel.hpp"
 #include "public/ImGuiPanelAdapter.h"
@@ -45,13 +47,7 @@ constexpr uint32_t kDirectorId = 0xE5C2B9A7u;
 constexpr uint32_t kPanelId = 0xCA510001u;
 constexpr uint32_t kSC4MessagePostCityInit = 0x26D31EC1u;
 constexpr uint32_t kSC4MessagePreCityShutdown = 0x26D31EC2u;
-constexpr size_t kInlineHookJumpByteCount = 5;
-constexpr size_t kInlineHookMaxPrologueBytes = 12;
 constexpr uint16_t kSupportedGameVersionForCatalogProbe = 641;
-constexpr uint16_t kSupportedGameVersionForEffectsHooks = 641;
-constexpr uintptr_t kEffectsBootstrapLoadRva = 0x001945B0;
-constexpr uintptr_t kEffectsParseQueuedFilesRva = 0x0018E4E0;
-constexpr uintptr_t kEffectsParserCtorRva = 0x0019EEC0;
 constexpr ptrdiff_t kEffectsParserResourceSaveEnabledOffset = 0xA4;
 constexpr ptrdiff_t kEffectsParserResourcePtrOffset = 0x94;
 constexpr ptrdiff_t kEffectsParserPackedKeyTypeOffset = 0x98;
@@ -60,66 +56,8 @@ constexpr ptrdiff_t kEffectsParserPackedKeyInstanceOffset = 0xA0;
 constexpr ptrdiff_t kEffectsParserSaveEnableInterfaceOffset = 0x4EC;
 constexpr ptrdiff_t kEffectsBootstrapParserInterfaceOffset = 0xC78;
 constexpr ptrdiff_t kEffectsBootstrapParserObjectOffset = 0xC7C;
-constexpr size_t kEffectsParserEnableResourceSavingVtableIndex = 1;
-constexpr ptrdiff_t kParserBlockStackBeginOffset = 0x30;
-constexpr ptrdiff_t kParserBlockStackEndOffset = 0x34;
 constexpr uint32_t kPackedEffectsResourceType = 0xEA5118B0u;
 constexpr uint32_t kPackedEffectsResourceGroup = 0xEA5118B1u;
-constexpr size_t kMaxCatalogEffectCount = 8192;
-constexpr size_t kMaxHashBucketCount = 32768;
-
-struct MsvcStringLayout {
-    union {
-        char inlineBuffer[16];
-        const char* heapBuffer;
-    };
-    uint32_t length;
-    uint32_t capacity;
-};
-
-struct CatalogProbeResult {
-    std::vector<SC4EffectsExtensionsDirector::EffectsCatalogSource> sources;
-    std::vector<std::string> names;
-};
-
-using EffectsBootstrapLoadFn = void(__thiscall*)(void*);
-using EffectsParseQueuedFilesFn = void(__fastcall*)(int, void*);
-using EffectsParserCtorFn = void*(__thiscall*)(void*, int);
-using EffectsParserEnableResourceSavingFn = void(__fastcall*)(void*);
-using FileParserAddInputFilePathFn = void(__thiscall*)(void*, const char*, uint32_t);
-using FileParserGetLastErrorStringFn = const char*(__thiscall*)(void*);
-using FileExistsFn = bool(__cdecl*)(int*);
-
-struct InlineHook {
-    const char* name;
-    uintptr_t rva;
-    size_t byteCount;
-    std::array<uint8_t, kInlineHookMaxPrologueBytes> expected;
-    void* hookFn;
-    uintptr_t patchAddress = 0;
-    void* trampoline = nullptr;
-    std::array<uint8_t, kInlineHookMaxPrologueBytes> original{};
-    bool installed = false;
-};
-
-void __fastcall HookEffectsBootstrapLoad(void* pThis, void*) noexcept;
-void __fastcall HookEffectsParseQueuedFiles(int pThis, void*) noexcept;
-void* __fastcall HookEffectsParserCtor(void* pThis, void*, int ctorArg) noexcept;
-bool __cdecl HookFileExistsForEffectsBootstrap(int* path) noexcept;
-
-SC4EffectsExtensionsDirector* g_activeDirector = nullptr;
-EffectsBootstrapLoadFn g_originalEffectsBootstrapLoad = nullptr;
-EffectsParseQueuedFilesFn g_originalEffectsParseQueuedFiles = nullptr;
-EffectsParserCtorFn g_originalEffectsParserCtor = nullptr;
-FileExistsFn g_originalFileExistsForEffectsBootstrap = nullptr;
-bool g_loadPluginFxRecursively = false;
-std::filesystem::path g_pluginFxRoot;
-bool g_inEffectsBootstrapLoad = false;
-
-InlineHook g_effectsBootstrapLoadHook{"EffectsBootstrap::LoadAllEffects", kEffectsBootstrapLoadRva, 9, {0x83, 0xEC, 0x64, 0x53, 0x55, 0x56, 0x57, 0x8B, 0xE9, 0x00, 0x00, 0x00}, reinterpret_cast<void*>(&HookEffectsBootstrapLoad)};
-InlineHook g_effectsParseQueuedFilesHook{"EffectsParser::ParseQueuedFiles", kEffectsParseQueuedFilesRva, 9, {0x56, 0x8B, 0xF1, 0x8B, 0x8E, 0x78, 0x0C, 0x00, 0x00, 0x00, 0x00, 0x00}, reinterpret_cast<void*>(&HookEffectsParseQueuedFiles)};
-InlineHook g_effectsParserCtorHook{"EffectsParser::Ctor", kEffectsParserCtorRva, 8, {0x8B, 0x44, 0x24, 0x04, 0x53, 0x56, 0x33, 0xDB}, reinterpret_cast<void*>(&HookEffectsParserCtor)};
-InlineHook g_effectsFileExistsHook{"EffectsBootstrap::FileExists", 0x00519E96, 6, {0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, reinterpret_cast<void*>(&HookFileExistsForEffectsBootstrap)};
 
 void ApplyTrackedTransformState(cS3DTransform& transform, const SC4EffectsExtensionsDirector::TrackedEffectState& state) noexcept {
     EffectTransformParams params{};
@@ -133,104 +71,8 @@ void ApplyTrackedTransformState(cS3DTransform& transform, const SC4EffectsExtens
     EffectsTransformUtil::Apply(transform, params);
 }
 
-void EmitHookEvent(const std::string& line) {
-    if (g_activeDirector) {
-        g_activeDirector->RecordHookEvent(line);
-    }
-    LOG_INFO(line);
-}
-
-uintptr_t ResolvePatchAddress(uintptr_t address) noexcept {
-    uintptr_t current = address;
-    for (int i = 0; i < 6; ++i) {
-        const auto* p = reinterpret_cast<const uint8_t*>(current);
-        if (p[0] == 0xE9) {
-            current = current + 5 + *reinterpret_cast<const int32_t*>(p + 1);
-            continue;
-        }
-        if (p[0] == 0xEB) {
-            current = current + 2 + static_cast<int8_t>(p[1]);
-            continue;
-        }
-        if (p[0] == 0xFF && p[1] == 0x25) {
-            current = *reinterpret_cast<const uintptr_t*>(*reinterpret_cast<const uintptr_t*>(p + 2));
-            continue;
-        }
-        break;
-    }
-    return current;
-}
-
-bool InstallInlineHook(InlineHook& hook) noexcept {
-    if (hook.installed) return true;
-    const auto moduleBase = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
-    if (!moduleBase) return false;
-    hook.patchAddress = ResolvePatchAddress(moduleBase + hook.rva);
-    auto* target = reinterpret_cast<uint8_t*>(hook.patchAddress);
-    if (!target) return false;
-    if (std::memcmp(target, hook.expected.data(), hook.byteCount) != 0) return false;
-    std::memcpy(hook.original.data(), target, hook.byteCount);
-    auto* trampoline = static_cast<uint8_t*>(VirtualAlloc(nullptr, hook.byteCount + kInlineHookJumpByteCount, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE));
-    if (!trampoline) return false;
-    std::memcpy(trampoline, target, hook.byteCount);
-    trampoline[hook.byteCount] = 0xE9;
-    const auto trampRel = static_cast<int32_t>(reinterpret_cast<intptr_t>(target + hook.byteCount) - (reinterpret_cast<intptr_t>(trampoline + hook.byteCount) + kInlineHookJumpByteCount));
-    std::memcpy(trampoline + hook.byteCount + 1, &trampRel, sizeof(trampRel));
-    DWORD oldProtect = 0;
-    if (!VirtualProtect(target, hook.byteCount, PAGE_EXECUTE_READWRITE, &oldProtect)) {
-        VirtualFree(trampoline, 0, MEM_RELEASE);
-        return false;
-    }
-    target[0] = 0xE9;
-    const auto hookRel = static_cast<int32_t>(reinterpret_cast<intptr_t>(hook.hookFn) - (reinterpret_cast<intptr_t>(target) + kInlineHookJumpByteCount));
-    std::memcpy(target + 1, &hookRel, sizeof(hookRel));
-    for (size_t i = kInlineHookJumpByteCount; i < hook.byteCount; ++i) target[i] = 0x90;
-    FlushInstructionCache(GetCurrentProcess(), target, hook.byteCount);
-    DWORD restoredProtect = 0;
-    VirtualProtect(target, hook.byteCount, oldProtect, &restoredProtect);
-    hook.trampoline = trampoline;
-    hook.installed = true;
-    return true;
-}
-
-void UninstallInlineHook(InlineHook& hook) noexcept {
-    if (!hook.installed) return;
-    auto* target = reinterpret_cast<uint8_t*>(hook.patchAddress);
-    if (target) {
-        DWORD oldProtect = 0;
-        if (VirtualProtect(target, hook.byteCount, PAGE_EXECUTE_READWRITE, &oldProtect)) {
-            std::memcpy(target, hook.original.data(), hook.byteCount);
-            FlushInstructionCache(GetCurrentProcess(), target, hook.byteCount);
-            DWORD restoredProtect = 0;
-            VirtualProtect(target, hook.byteCount, oldProtect, &restoredProtect);
-        }
-    }
-    if (hook.trampoline) VirtualFree(hook.trampoline, 0, MEM_RELEASE);
-    hook.trampoline = nullptr;
-    hook.patchAddress = 0;
-    hook.installed = false;
-}
-
 uint8_t ReadParserByte(int parser, ptrdiff_t offset) noexcept { return parser ? *reinterpret_cast<const uint8_t*>(parser + offset) : 0; }
 uint32_t ReadParserDword(int parser, ptrdiff_t offset) noexcept { return parser ? *reinterpret_cast<const uint32_t*>(parser + offset) : 0; }
-int GetRZStringVectorSize(const int* pVector) noexcept {
-    if (!pVector) return -1;
-    const auto begin = pVector[0];
-    const auto end = pVector[1];
-    return (begin && end >= begin) ? (end - begin) / 0x14 : -1;
-}
-int GetParserBlockDepth(int parser) noexcept {
-    const auto begin = ReadParserDword(parser, kParserBlockStackBeginOffset);
-    const auto end = ReadParserDword(parser, kParserBlockStackEndOffset);
-    return (begin && end >= begin) ? static_cast<int>((end - begin) / sizeof(uint32_t)) : -1;
-}
-uint32_t ResolveConcreteParser(void* pParserInterface) noexcept {
-    if (!pParserInterface) return 0;
-    const auto vtable = *reinterpret_cast<void***>(pParserInterface);
-    if (!vtable || !vtable[0x28 / sizeof(void*)]) return 0;
-    using ResolveFn = uint32_t(__thiscall*)(void*);
-    return reinterpret_cast<ResolveFn>(vtable[0x28 / sizeof(void*)])(pParserInterface);
-}
 
 bool IsReadableRange(const void* pAddress, const size_t size) noexcept {
     if (!pAddress || size == 0) return false;
@@ -247,35 +89,6 @@ bool IsReadableRange(const void* pAddress, const size_t size) noexcept {
 
 bool IsPlausibleEffectNameChar(const unsigned char ch) noexcept {
     return std::isalnum(ch) || ch == '_' || ch == '-' || ch == '.' || ch == '/';
-}
-
-bool HasFxExtension(const std::filesystem::path& path) {
-    const auto extension = path.extension().string();
-    if (extension.size() != 3) return false;
-    return std::tolower(static_cast<unsigned char>(extension[0])) == '.' &&
-           std::tolower(static_cast<unsigned char>(extension[1])) == 'f' &&
-           std::tolower(static_cast<unsigned char>(extension[2])) == 'x';
-}
-
-std::vector<std::filesystem::path> EnumeratePluginFxFiles() {
-    std::vector<std::filesystem::path> files;
-    if (!g_loadPluginFxRecursively || g_pluginFxRoot.empty()) return files;
-
-    std::error_code ec;
-    if (!std::filesystem::exists(g_pluginFxRoot, ec) || ec) return files;
-
-    for (std::filesystem::recursive_directory_iterator it(g_pluginFxRoot, ec), end; it != end; it.increment(ec)) {
-        if (ec) break;
-        if (!it->is_regular_file(ec) || ec) continue;
-
-        const auto path = it->path();
-        if (!HasFxExtension(path)) continue;
-        if (_stricmp(path.filename().string().c_str(), "main.fx") == 0) continue;
-        files.push_back(path);
-    }
-
-    std::sort(files.begin(), files.end());
-    return files;
 }
 
 std::filesystem::path GetGameUserPluginDirectory() {
@@ -311,101 +124,6 @@ std::filesystem::path GetDefaultPackedEffectsOutputPath() {
         return pluginsPath / "SC4EffectsExtensions.PackedEffects.dat";
     }
     return {};
-}
-
-void QueueExtraPluginFxFilesOnParserInterface(void* pFileParser) noexcept {
-    if (!g_loadPluginFxRecursively || !pFileParser) return;
-
-    if (!pFileParser) {
-        LOG_WARN("Plugin .fx queue skipped: file parser interface is null");
-        return;
-    }
-
-    auto* const vtable = *reinterpret_cast<void***>(pFileParser);
-    if (!vtable || !vtable[0x18 / sizeof(void*)]) {
-        LOG_WARN("Plugin .fx queue skipped: AddInputFilePath slot is unavailable");
-        return;
-    }
-
-    const auto files = EnumeratePluginFxFiles();
-    if (files.empty()) {
-        LOG_INFO("Plugin .fx queue: no extra .fx files found under '{}'", g_pluginFxRoot.string());
-        return;
-    }
-
-    const auto addInputFilePath = reinterpret_cast<FileParserAddInputFilePathFn>(vtable[0x18 / sizeof(void*)]);
-    size_t queuedCount = 0;
-    for (const auto& path : files) {
-        const auto pathString = path.string();
-        addInputFilePath(pFileParser, pathString.c_str(), 3);
-        LOG_INFO("Plugin .fx queue: {}", pathString);
-        ++queuedCount;
-    }
-
-    LOG_INFO("Plugin .fx queue: queued {} extra .fx files from '{}'", queuedCount, g_pluginFxRoot.string());
-}
-
-void LogFileParserErrorConsole(void* pFileParser) noexcept {
-    if (!pFileParser) {
-        return;
-    }
-
-    auto* const vtable = *reinterpret_cast<void***>(pFileParser);
-    if (!vtable || !vtable[0x28 / sizeof(void*)]) {
-        return;
-    }
-
-    const auto getLastErrorString = reinterpret_cast<FileParserGetLastErrorStringFn>(vtable[0x28 / sizeof(void*)]);
-    const char* const pError = getLastErrorString(pFileParser);
-    if (!pError || !*pError) {
-        return;
-    }
-
-    std::string errorText(pError);
-    LOG_ERROR("Effects parser console: {}", errorText);
-    if (g_activeDirector) {
-        g_activeDirector->RecordConsoleEvent(
-            SC4EffectsExtensionsDirector::EventSeverity::Error,
-            "Effects parser: " + errorText);
-    }
-}
-
-bool LooksLikeEffectName(const std::string_view text) noexcept {
-    if (text.empty() || text.size() > 128) return false;
-    for (const unsigned char ch : text) {
-        if (!IsPlausibleEffectNameChar(ch)) return false;
-    }
-    return true;
-}
-
-bool TryReadMsvcStringLayout(const void* pAddress, MsvcStringLayout& out) noexcept {
-    if (!IsReadableRange(pAddress, sizeof(MsvcStringLayout))) return false;
-
-    __try {
-        out = *reinterpret_cast<const MsvcStringLayout*>(pAddress);
-        return true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
-}
-
-bool TryReadVectorTriplet(
-    const uint8_t* pBase,
-    const ptrdiff_t offset,
-    uint32_t& begin,
-    uint32_t& end,
-    uint32_t& capacity) noexcept
-{
-    if (!IsReadableRange(pBase + offset, sizeof(uint32_t) * 3)) return false;
-
-    __try {
-        begin = *reinterpret_cast<const uint32_t*>(pBase + offset);
-        end = *reinterpret_cast<const uint32_t*>(pBase + offset + 4);
-        capacity = *reinterpret_cast<const uint32_t*>(pBase + offset + 8);
-        return true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
 }
 
 bool TryReadUint32(const void* pAddress, uint32_t& out) noexcept {
@@ -504,55 +222,6 @@ void AppendNodeDump(
     }
 }
 
-std::vector<std::string> ProbeDoMessageHashNames(cISC4EffectsManager* pEffectsManager) noexcept {
-    std::vector<std::string> names;
-    if (!pEffectsManager) return names;
-
-    auto* const pManager = reinterpret_cast<const uint8_t*>(pEffectsManager);
-    uint32_t bucketsBegin = 0;
-    uint32_t bucketsEnd = 0;
-    uint32_t bucketState = 0;
-    uint32_t recordBase = 0;
-
-    if (!TryReadUint32(pManager + 0xD10, bucketsBegin)) return names;
-    if (!TryReadUint32(pManager + 0xD14, bucketsEnd)) return names;
-    if (!TryReadUint32(pManager + 0xD1C, bucketState)) return names;
-    if (!TryReadUint32(pManager + 0x188, recordBase)) return names;
-
-    if (bucketState == 0 || bucketsBegin == 0 || bucketsEnd <= bucketsBegin || recordBase == 0) return names;
-
-    const size_t bucketCount = (bucketsEnd - bucketsBegin) / sizeof(uint32_t);
-    if (bucketCount == 0 || bucketCount > kMaxHashBucketCount) return names;
-    if (!IsReadableRange(reinterpret_cast<const void*>(bucketsBegin), bucketCount * sizeof(uint32_t))) return names;
-
-    for (size_t bucketIndex = 0; bucketIndex < bucketCount; ++bucketIndex) {
-        uint32_t node = 0;
-        if (!TryReadUint32(reinterpret_cast<const void*>(bucketsBegin + (bucketIndex * sizeof(uint32_t))), node)) continue;
-
-        size_t chainDepth = 0;
-        while (node && chainDepth < 2048) {
-            uint32_t next = 0;
-            uint32_t effectIndex = 0;
-            if (!TryReadUint32(reinterpret_cast<const void*>(node), next)) break;
-            if (!TryReadUint32(reinterpret_cast<const void*>(node + 8), effectIndex)) break;
-
-            std::string name;
-            const auto recordAddr = static_cast<uintptr_t>(recordBase) + (static_cast<uintptr_t>(effectIndex) * 0x10) + 4;
-            if (TryReadCStringPointer(reinterpret_cast<const void*>(recordAddr), 128, name) &&
-                pEffectsManager->HasVisualEffect(name.c_str())) {
-                names.push_back(std::move(name));
-            }
-
-            node = next;
-            ++chainDepth;
-        }
-    }
-
-    std::sort(names.begin(), names.end());
-    names.erase(std::unique(names.begin(), names.end()), names.end());
-    return names;
-}
-
 bool TryReadStringSpan(const uint32_t begin, const uint32_t end, std::string& out) noexcept {
     out.clear();
     if (begin == 0 || end < begin) return false;
@@ -575,90 +244,6 @@ bool TryReadStringSpan(const uint32_t begin, const uint32_t end, std::string& ou
     return true;
 }
 
-std::vector<std::string> ProbePrimaryCollectionHashNames(cISC4EffectsManager* pEffectsManager) noexcept {
-    std::vector<std::string> names;
-    if (!pEffectsManager) return names;
-
-    auto* const pManager = reinterpret_cast<const uint8_t*>(pEffectsManager);
-    auto* const pCollection = pManager + 0x98;
-
-    uint32_t bucketsBegin = 0;
-    uint32_t bucketsEnd = 0;
-    if (!TryReadUint32(pCollection + 0x4, bucketsBegin)) return names;
-    if (!TryReadUint32(pCollection + 0x8, bucketsEnd)) return names;
-    if (bucketsBegin == 0 || bucketsEnd <= bucketsBegin) return names;
-
-    const size_t bucketCount = (bucketsEnd - bucketsBegin) / sizeof(uint32_t);
-    if (bucketCount == 0 || bucketCount > kMaxHashBucketCount) return names;
-    if (!IsReadableRange(reinterpret_cast<const void*>(bucketsBegin), bucketCount * sizeof(uint32_t))) return names;
-
-    for (size_t bucketIndex = 0; bucketIndex < bucketCount; ++bucketIndex) {
-        uint32_t node = 0;
-        if (!TryReadUint32(reinterpret_cast<const void*>(bucketsBegin + (bucketIndex * sizeof(uint32_t))), node)) continue;
-
-        size_t chainDepth = 0;
-        while (node && chainDepth < 8192) {
-            uint32_t next = 0;
-            uint32_t strBegin = 0;
-            uint32_t strEnd = 0;
-            if (!TryReadUint32(reinterpret_cast<const void*>(node), next)) break;
-            if (!TryReadUint32(reinterpret_cast<const void*>(node + 4), strBegin)) break;
-            if (!TryReadUint32(reinterpret_cast<const void*>(node + 8), strEnd)) break;
-
-            std::string name;
-            if (TryReadStringSpan(strBegin, strEnd, name) && pEffectsManager->HasVisualEffect(name.c_str())) {
-                names.push_back(std::move(name));
-            }
-
-            node = next;
-            ++chainDepth;
-        }
-    }
-
-    std::sort(names.begin(), names.end());
-    names.erase(std::unique(names.begin(), names.end()), names.end());
-    return names;
-}
-
-bool TryReadMsvcString(const void* pAddress, std::string& out) noexcept {
-    out.clear();
-    MsvcStringLayout value{};
-    if (!TryReadMsvcStringLayout(pAddress, value)) return false;
-    if (value.length == 0 || value.length > 128) return false;
-
-    const char* pText = nullptr;
-    if (value.capacity <= 15) {
-        pText = value.inlineBuffer;
-    } else {
-        if (!value.heapBuffer || !IsReadableRange(value.heapBuffer, value.length)) return false;
-        pText = value.heapBuffer;
-    }
-
-    std::string candidate(pText, value.length);
-    if (!LooksLikeEffectName(candidate)) return false;
-    out = std::move(candidate);
-    return true;
-}
-
-CatalogProbeResult ProbeKnownEffectsFromManager(cISC4EffectsManager* pEffectsManager) noexcept {
-    CatalogProbeResult result{};
-    if (!pEffectsManager) return result;
-
-    auto names = ProbePrimaryCollectionHashNames(pEffectsManager);
-    if (names.size() >= 8) {
-        SC4EffectsExtensionsDirector::EffectsCatalogSource source{};
-        source.label = "Primary collection object +0x98 (hash at +0x04)";
-        source.vectorOffset = 0x9C;
-        source.elementSize = 0x0C;
-        source.stringOffset = 0x04;
-        source.names = names;
-        result.sources.push_back(source);
-        result.names = std::move(names);
-    }
-
-    return result;
-}
-
 std::string DescribeDBSegment(cIGZPersistDBSegment* pSegment) {
     if (!pSegment) return "segment=null";
     cRZBaseString path;
@@ -673,151 +258,6 @@ std::string DescribeDBSegment(cIGZPersistDBSegment* pSegment) {
     return buffer;
 }
 
-void CallEffectsParserEnableResourceSaving(int parser) noexcept {
-    if (!parser) return;
-    const auto interfaceThis = reinterpret_cast<void*>(static_cast<uintptr_t>(parser) + kEffectsParserSaveEnableInterfaceOffset);
-    auto** const vtable = interfaceThis ? *reinterpret_cast<void***>(interfaceThis) : nullptr;
-    if (!vtable) return;
-    const auto fn = reinterpret_cast<EffectsParserEnableResourceSavingFn>(vtable[kEffectsParserEnableResourceSavingVtableIndex]);
-    if (!fn) return;
-    fn(interfaceThis);
-}
-
-void __fastcall HookEffectsBootstrapLoad(void* const pThis, void* const) noexcept {
-    auto* const pBootstrap = reinterpret_cast<uint8_t*>(pThis);
-    void* const pFileParserInterface = *reinterpret_cast<void* const*>(pBootstrap + kEffectsBootstrapParserInterfaceOffset);
-    void* const pParserInterface = *reinterpret_cast<void* const*>(pBootstrap + kEffectsBootstrapParserObjectOffset);
-    if (pParserInterface) {
-        const auto parser = static_cast<int>(reinterpret_cast<uintptr_t>(reinterpret_cast<uint8_t*>(pParserInterface) - kEffectsParserSaveEnableInterfaceOffset));
-        EmitHookEvent("LoadAllEffects saveEnabled=" + std::to_string(static_cast<unsigned>(ReadParserByte(parser, kEffectsParserResourceSaveEnabledOffset))));
-        LOG_INFO("LoadAllEffects parserIfc=0x{:08X} vtbl=0x{:08X} parserObjIfc=0x{:08X} vtbl=0x{:08X}",
-                 static_cast<uint32_t>(reinterpret_cast<uintptr_t>(pFileParserInterface)),
-                 pFileParserInterface ? static_cast<uint32_t>(reinterpret_cast<uintptr_t>(*reinterpret_cast<void**>(pFileParserInterface))) : 0u,
-                 static_cast<uint32_t>(reinterpret_cast<uintptr_t>(pParserInterface)),
-                 static_cast<uint32_t>(reinterpret_cast<uintptr_t>(*reinterpret_cast<void**>(pParserInterface))));
-    }
-    g_inEffectsBootstrapLoad = true;
-    if (g_originalEffectsBootstrapLoad) g_originalEffectsBootstrapLoad(pThis);
-    g_inEffectsBootstrapLoad = false;
-}
-
-void __fastcall HookEffectsParseQueuedFiles(const int pThis, void* const) noexcept {
-    void* pParserInterface = nullptr;
-    void* pEffectsParserInterface = nullptr;
-    if (g_inEffectsBootstrapLoad) {
-        const auto* const pBootstrap = reinterpret_cast<const uint8_t*>(pThis);
-        pParserInterface = *reinterpret_cast<void* const*>(pBootstrap + kEffectsBootstrapParserInterfaceOffset);
-        pEffectsParserInterface = *reinterpret_cast<void* const*>(pBootstrap + kEffectsBootstrapParserObjectOffset);
-        LOG_INFO("ParseQueuedFiles during bootstrap: manager=0x{:08X} parserIfc=0x{:08X}",
-                 static_cast<uint32_t>(pThis),
-                 static_cast<uint32_t>(reinterpret_cast<uintptr_t>(pParserInterface)));
-        if (pEffectsParserInterface) {
-            const auto parser = static_cast<int>(
-                reinterpret_cast<uintptr_t>(reinterpret_cast<uint8_t*>(pEffectsParserInterface) - kEffectsParserSaveEnableInterfaceOffset));
-            const auto before = static_cast<unsigned>(ReadParserByte(parser, kEffectsParserResourceSaveEnabledOffset));
-            CallEffectsParserEnableResourceSaving(parser);
-            const auto after = static_cast<unsigned>(ReadParserByte(parser, kEffectsParserResourceSaveEnabledOffset));
-            EmitHookEvent("ParseQueuedFiles saveEnabled " + std::to_string(before) + " -> " + std::to_string(after));
-        }
-        QueueExtraPluginFxFilesOnParserInterface(pParserInterface);
-    }
-    if (g_originalEffectsParseQueuedFiles) {
-        g_originalEffectsParseQueuedFiles(pThis, nullptr);
-    }
-    if (!pParserInterface) {
-        const auto* const pBootstrap = reinterpret_cast<const uint8_t*>(pThis);
-        pParserInterface = *reinterpret_cast<void* const*>(pBootstrap + kEffectsBootstrapParserInterfaceOffset);
-    }
-    LogFileParserErrorConsole(pParserInterface);
-}
-
-bool __cdecl HookFileExistsForEffectsBootstrap(int* const path) noexcept {
-    const bool exists = g_originalFileExistsForEffectsBootstrap ? g_originalFileExistsForEffectsBootstrap(path) : false;
-    if (exists) {
-        return true;
-    }
-
-    if (!g_inEffectsBootstrapLoad || !g_loadPluginFxRecursively) {
-        return false;
-    }
-
-    const auto files = EnumeratePluginFxFiles();
-    if (files.empty()) {
-        return false;
-    }
-
-    LOG_INFO("Forcing bootstrap file-exists branch because {} extra plugin .fx files were found", files.size());
-    return true;
-}
-
-void* __fastcall HookEffectsParserCtor(void* const pThis, void* const, const int ctorArg) noexcept {
-    void* result = pThis;
-    if (g_originalEffectsParserCtor) result = g_originalEffectsParserCtor(pThis, ctorArg);
-    if (result && ctorArg != 0) {
-        const auto parser = static_cast<int>(reinterpret_cast<uintptr_t>(result));
-        const auto before = static_cast<unsigned>(ReadParserByte(parser, kEffectsParserResourceSaveEnabledOffset));
-        CallEffectsParserEnableResourceSaving(parser);
-        const auto after = static_cast<unsigned>(ReadParserByte(parser, kEffectsParserResourceSaveEnabledOffset));
-        EmitHookEvent("EffectsParser::Ctor saveEnabled " + std::to_string(before) + " -> " + std::to_string(after));
-    }
-    return result;
-}
-
-bool InstallEffectsResourceHooks() noexcept {
-    const auto gameVersion = VersionDetection::GetInstance().GetGameVersion();
-    if (gameVersion != kSupportedGameVersionForEffectsHooks) {
-        LOG_WARN("Skipping legacy effects resource hooks: unsupported game version {}", gameVersion);
-        return false;
-    }
-
-    const bool bootstrapLoadOk = InstallInlineHook(g_effectsBootstrapLoadHook);
-    const bool parseQueuedFilesOk = InstallInlineHook(g_effectsParseQueuedFilesHook);
-    const bool parserCtorOk = InstallInlineHook(g_effectsParserCtorHook);
-    const bool fileExistsOk = InstallInlineHook(g_effectsFileExistsHook);
-
-    if (bootstrapLoadOk) g_originalEffectsBootstrapLoad = reinterpret_cast<EffectsBootstrapLoadFn>(g_effectsBootstrapLoadHook.trampoline);
-    if (parseQueuedFilesOk) g_originalEffectsParseQueuedFiles = reinterpret_cast<EffectsParseQueuedFilesFn>(g_effectsParseQueuedFilesHook.trampoline);
-    if (parserCtorOk) g_originalEffectsParserCtor = reinterpret_cast<EffectsParserCtorFn>(g_effectsParserCtorHook.trampoline);
-    if (fileExistsOk) g_originalFileExistsForEffectsBootstrap = reinterpret_cast<FileExistsFn>(g_effectsFileExistsHook.trampoline);
-
-    if (!bootstrapLoadOk || !parserCtorOk) {
-        UninstallInlineHook(g_effectsBootstrapLoadHook);
-        if (parseQueuedFilesOk) {
-            UninstallInlineHook(g_effectsParseQueuedFilesHook);
-        }
-        UninstallInlineHook(g_effectsParserCtorHook);
-        if (fileExistsOk) {
-            UninstallInlineHook(g_effectsFileExistsHook);
-        }
-        g_originalEffectsBootstrapLoad = nullptr;
-        g_originalEffectsParseQueuedFiles = nullptr;
-        g_originalEffectsParserCtor = nullptr;
-        g_originalFileExistsForEffectsBootstrap = nullptr;
-        return false;
-    }
-
-    if (!parseQueuedFilesOk) {
-        LOG_WARN("Proceeding without ParseQueuedFiles hook; extra plugin .fx injection is disabled");
-        g_originalEffectsParseQueuedFiles = nullptr;
-    }
-    if (!fileExistsOk) {
-        LOG_WARN("Proceeding without bootstrap file-exists override; extra plugin .fx files may still require main.fx");
-        g_originalFileExistsForEffectsBootstrap = nullptr;
-    }
-
-    return true;
-}
-
-void UninstallEffectsResourceHooks() noexcept {
-    UninstallInlineHook(g_effectsBootstrapLoadHook);
-    UninstallInlineHook(g_effectsParseQueuedFilesHook);
-    UninstallInlineHook(g_effectsParserCtorHook);
-    UninstallInlineHook(g_effectsFileExistsHook);
-    g_originalEffectsBootstrapLoad = nullptr;
-    g_originalEffectsParseQueuedFiles = nullptr;
-    g_originalEffectsParserCtor = nullptr;
-    g_originalFileExistsForEffectsBootstrap = nullptr;
-}
 }
 
 SC4EffectsExtensionsDirector::SC4EffectsExtensionsDirector() = default;
@@ -840,10 +280,10 @@ bool SC4EffectsExtensionsDirector::PostAppInit() {
     LOG_INFO("PostAppInit");
     LOG_INFO("Detected game version: {}", gameVersion);
 
-    effectsHookInstalled_ = InstallEffectsResourceHooks();
-    PushEventLine_(
-        effectsHookInstalled_ ? "effects hooks installed" : "failed to install effects hooks",
-        effectsHookInstalled_ ? EventSeverity::Info : EventSeverity::Warning);
+    hooks_ = std::make_unique<EffectsBootstrapHooks>(EffectsBootstrapHooks::Callbacks{
+        .onInfoEvent = [this](const std::string_view line) { RecordHookEvent(line); },
+        .onParserError = [this](const std::string_view line) { RecordConsoleEvent(EventSeverity::Error, line); },
+    });
 
     cIGZMessageServer2Ptr pMS2;
     if (pMS2) {
@@ -855,19 +295,23 @@ bool SC4EffectsExtensionsDirector::PostAppInit() {
 
     Settings settings;
     settings.Load(GetUserPluginsPath_() / "SC4EffectsExtensions.ini");
-    g_loadPluginFxRecursively = settings.GetLoadPluginFxRecursively();
-    g_pluginFxRoot = settings.GetPluginFxRoot();
+    auto pluginFxRoot = settings.GetPluginFxRoot();
     packedEffectsOutputPath_ = settings.GetPackedEffectsOutputPath();
-    if (g_pluginFxRoot.empty()) {
-        g_pluginFxRoot = GetGameUserPluginDirectory();
+    if (pluginFxRoot.empty()) {
+        pluginFxRoot = GetGameUserPluginDirectory();
     }
-    if (g_pluginFxRoot.empty()) {
-        g_pluginFxRoot = GetUserPluginsPath_();
+    if (pluginFxRoot.empty()) {
+        pluginFxRoot = GetUserPluginsPath_();
     }
     if (packedEffectsOutputPath_.empty()) {
         packedEffectsOutputPath_ = GetDefaultPackedEffectsOutputPath();
     }
-    LOG_INFO("Plugin .fx recursive loading: enabled={} root='{}'", g_loadPluginFxRecursively, g_pluginFxRoot.string());
+    hooks_->ConfigureRecursiveLoading(settings.GetLoadPluginFxRecursively(), pluginFxRoot);
+    effectsHookInstalled_ = hooks_->Install(gameVersion);
+    PushEventLine_(
+        effectsHookInstalled_ ? "effects hooks installed" : "failed to install effects hooks",
+        effectsHookInstalled_ ? EventSeverity::Info : EventSeverity::Warning);
+    LOG_INFO("Plugin .fx recursive loading: enabled={} root='{}'", settings.GetLoadPluginFxRecursively(), pluginFxRoot.string());
     LOG_INFO("Packed effects output path: '{}'", packedEffectsOutputPath_.string());
 
     if (!packedEffectsOutputPath_.empty()) {
@@ -887,14 +331,12 @@ bool SC4EffectsExtensionsDirector::PostAppInit() {
         if (imguiService_->RegisterPanel(desc)) panelRegistered_ = true;
     }
 
-    g_activeDirector = this;
     return true;
 }
 
 bool SC4EffectsExtensionsDirector::PreAppShutdown() { return true; }
 
 bool SC4EffectsExtensionsDirector::PostAppShutdown() {
-    g_activeDirector = nullptr;
     PreCityShutdown_();
     ReleasePackedEffectsSaveSegment_();
     if (messageServer2_) {
@@ -913,7 +355,10 @@ bool SC4EffectsExtensionsDirector::PostAppShutdown() {
         imguiService_ = nullptr;
     }
     if (auto* framework = RZGetFrameWork()) framework->RemoveHook(this);
-    UninstallEffectsResourceHooks();
+    if (hooks_) {
+        hooks_->Uninstall();
+        hooks_.reset();
+    }
     effectsHookInstalled_ = false;
     Logger::Shutdown();
     return true;
@@ -966,7 +411,7 @@ std::vector<std::string> SC4EffectsExtensionsDirector::GetKnownEffectsSnapshot()
     return knownEffects_;
 }
 
-std::vector<SC4EffectsExtensionsDirector::EffectsCatalogSource> SC4EffectsExtensionsDirector::GetCatalogSourcesSnapshot() const {
+std::vector<EffectsCatalogSource> SC4EffectsExtensionsDirector::GetCatalogSourcesSnapshot() const {
     std::scoped_lock lock(effectsMutex_);
     return catalogSources_;
 }
@@ -1505,7 +950,7 @@ bool SC4EffectsExtensionsDirector::RefreshKnownEffects_() {
     if (!effectsManager_) return false;
     if (VersionDetection::GetInstance().GetGameVersion() != kSupportedGameVersionForCatalogProbe) return false;
 
-    const CatalogProbeResult probe = ProbeKnownEffectsFromManager(effectsManager_);
+    const EffectsCatalogSnapshot probe = EffectsCatalogProbe::ProbePrimaryHash(effectsManager_);
     if (probe.names.empty()) {
         PushEventLine_("catalog probe: no validated effect list found", EventSeverity::Warning);
         return false;

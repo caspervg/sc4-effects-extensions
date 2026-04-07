@@ -10,9 +10,11 @@
 #include <string_view>
 #include <vector>
 
+#include "EffectsCatalogProbe.hpp"
 #include "public/cIGZImGuiService.h"
 
 class EffectsPanel;
+class EffectsBootstrapHooks;
 class cIGZMessage2;
 class cIGZCOM;
 class cIGZDBSegmentPackedFile;
@@ -29,14 +31,6 @@ public:
         Info,
         Warning,
         Error,
-    };
-
-    struct EffectsCatalogSource {
-        std::string label;
-        ptrdiff_t vectorOffset = 0;
-        size_t elementSize = 0;
-        size_t stringOffset = 0;
-        std::vector<std::string> names;
     };
 
     struct RecentEvent {
@@ -107,6 +101,7 @@ private:
     cISC4EffectsManager* effectsManager_ = nullptr;
     cISC4VisualEffect* trackedEffect_ = nullptr;
     cIGZDBSegmentPackedFile* packedEffectsSegment_ = nullptr;
+    std::unique_ptr<EffectsBootstrapHooks> hooks_;
     std::unique_ptr<EffectsPanel> panel_;
     bool panelRegistered_ = false;
     bool effectsHookInstalled_ = false;
