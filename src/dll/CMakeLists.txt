@@ -7,6 +7,7 @@ set(SC4_RENDER_SERVICES_ROOT "${CMAKE_SOURCE_DIR}/vendor/sc4-render-services" CA
 set(SC4_RENDER_SERVICES_PUBLIC_DIR "${SC4_RENDER_SERVICES_ROOT}/src")
 set(SC4_RENDER_SERVICES_IMGUI_DIR "${SC4_RENDER_SERVICES_ROOT}/vendor/d3d7imgui/ImGui")
 set(SC4_RENDER_SERVICES_LIB_DIR "${SC4_RENDER_SERVICES_ROOT}" CACHE PATH "Path containing imgui.lib from sc4-render-services build")
+set(IMGUI_COLOR_TEXT_EDIT_DIR "${CMAKE_SOURCE_DIR}/vendor/imgui-color-text-edit")
 
 set(GZCOM_DIR "${CMAKE_SOURCE_DIR}/vendor/gzcom-dll/gzcom-dll")
 
@@ -41,6 +42,10 @@ file(GLOB_RECURSE PROJECT_SOURCES CONFIGURE_DEPENDS
 
 add_library(${PROJECT_NAME} SHARED ${PROJECT_SOURCES} "${CMAKE_CURRENT_SOURCE_DIR}/SC4EffectsExtensions.def")
 
+target_sources(${PROJECT_NAME} PRIVATE
+    "${IMGUI_COLOR_TEXT_EDIT_DIR}/TextEditor.cpp"
+)
+
 target_compile_definitions(${PROJECT_NAME} PRIVATE
     NOMINMAX
     WIN32_LEAN_AND_MEAN
@@ -55,6 +60,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     "${MINI_INCLUDE_DIR}"
     "${SC4_RENDER_SERVICES_PUBLIC_DIR}"
     "${SC4_RENDER_SERVICES_IMGUI_DIR}"
+    "${IMGUI_COLOR_TEXT_EDIT_DIR}"
 )
 
 find_library(IMGUI_LIB NAMES imgui

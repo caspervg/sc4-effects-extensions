@@ -8,3 +8,6 @@
 	path = vendor/vcpkg
 	url = https://github.com/microsoft/vcpkg.git
 
+[submodule "vendor/imgui-color-text-edit"]
+	path = vendor/imgui-color-text-edit
+	url = https://github.com/BalazsJako/ImGuiColorTextEdit.git

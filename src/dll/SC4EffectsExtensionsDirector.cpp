@@ -6,6 +6,8 @@
 #include <cmath>
 #include <cIGZFrameWork.h>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <cstdio>
 #include <cstring>
 
@@ -123,6 +125,15 @@ bool IsReadableRange(const void* pAddress, const size_t size) noexcept {
 
 bool IsPlausibleEffectNameChar(const unsigned char ch) noexcept {
     return std::isalnum(ch) || ch == '_' || ch == '-' || ch == '.' || ch == '/';
+}
+
+bool HasFxExtension(const std::filesystem::path& path)
+{
+    const auto extension = path.extension().string();
+    if (extension.size() != 3) return false;
+    return std::tolower(static_cast<unsigned char>(extension[0])) == '.' &&
+           std::tolower(static_cast<unsigned char>(extension[1])) == 'f' &&
+           std::tolower(static_cast<unsigned char>(extension[2])) == 'x';
 }
 
 std::filesystem::path GetGameUserPluginDirectory() {
@@ -344,14 +355,15 @@ bool SC4EffectsExtensionsDirector::PostAppInit() {
     if (packedEffectsOutputPath_.empty()) {
         packedEffectsOutputPath_ = GetDefaultPackedEffectsOutputPath();
     }
-    hooks_->ConfigureRecursiveLoading(settings.GetLoadPluginFxRecursively(), pluginFxRoot);
+    pluginFxRoot_ = pluginFxRoot;
+    hooks_->ConfigureRecursiveLoading(settings.GetLoadPluginFxRecursively(), pluginFxRoot_);
     effectsHookInstalled_ = hooks_->Install(gameVersion);
     if (effectsHookInstalled_) {
         LOG_INFO("effects hooks installed");
     } else {
         LOG_WARN("failed to install effects hooks");
     }
-    LOG_INFO("Plugin .fx recursive loading: enabled={} root='{}'", settings.GetLoadPluginFxRecursively(), pluginFxRoot.string());
+    LOG_INFO("Plugin .fx recursive loading: enabled={} root='{}'", settings.GetLoadPluginFxRecursively(), pluginFxRoot_.string());
     LOG_INFO("Packed effects output path: '{}'", packedEffectsOutputPath_.string());
 
     if (!packedEffectsOutputPath_.empty()) {
@@ -455,6 +467,31 @@ std::vector<std::string> SC4EffectsExtensionsDirector::GetKnownEffectsSnapshot()
 std::vector<EffectsCatalogSource> SC4EffectsExtensionsDirector::GetCatalogSourcesSnapshot() const {
     std::scoped_lock lock(effectsMutex_);
     return catalogSources_;
+}
+
+std::vector<std::filesystem::path> SC4EffectsExtensionsDirector::GetPluginFxFiles() const
+{
+    std::vector<std::filesystem::path> files;
+    if (pluginFxRoot_.empty()) {
+        return files;
+    }
+
+    std::error_code ec;
+    if (!std::filesystem::exists(pluginFxRoot_, ec) || ec) {
+        return files;
+    }
+
+    for (std::filesystem::recursive_directory_iterator it(pluginFxRoot_, ec), end; it != end; it.increment(ec)) {
+        if (ec) break;
+        if (!it->is_regular_file(ec) || ec) continue;
+
+        const auto path = it->path();
+        if (!HasFxExtension(path)) continue;
+        files.push_back(path);
+    }
+
+    std::sort(files.begin(), files.end());
+    return files;
 }
 
 std::string SC4EffectsExtensionsDirector::GetEffectsStatsString() const {
@@ -608,6 +645,76 @@ void SC4EffectsExtensionsDirector::StopTrackedEffect() {
     if (!effectName.empty()) {
         LOG_INFO("tracked stop: {}", effectName);
     }
+}
+
+bool SC4EffectsExtensionsDirector::ReadPluginFxFile(const std::filesystem::path& path, std::string& contents) const
+{
+    contents.clear();
+    if (path.empty() || pluginFxRoot_.empty()) {
+        return false;
+    }
+
+    std::error_code ec;
+    const auto canonicalRoot = std::filesystem::weakly_canonical(pluginFxRoot_, ec);
+    if (ec) {
+        return false;
+    }
+
+    const auto canonicalPath = std::filesystem::weakly_canonical(path, ec);
+    if (ec) {
+        return false;
+    }
+
+    const auto rootText = canonicalRoot.native();
+    const auto pathText = canonicalPath.native();
+    if (pathText.rfind(rootText, 0) != 0) {
+        return false;
+    }
+
+    std::ifstream stream(canonicalPath, std::ios::binary);
+    if (!stream) {
+        return false;
+    }
+
+    contents.assign(std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>());
+    return true;
+}
+
+bool SC4EffectsExtensionsDirector::WritePluginFxFile(const std::filesystem::path& path, const std::string& contents)
+{
+    if (path.empty() || pluginFxRoot_.empty()) {
+        return false;
+    }
+
+    std::error_code ec;
+    const auto canonicalRoot = std::filesystem::weakly_canonical(pluginFxRoot_, ec);
+    if (ec) {
+        return false;
+    }
+
+    const auto canonicalPath = std::filesystem::weakly_canonical(path, ec);
+    if (ec) {
+        return false;
+    }
+
+    const auto rootText = canonicalRoot.native();
+    const auto pathText = canonicalPath.native();
+    if (pathText.rfind(rootText, 0) != 0) {
+        return false;
+    }
+
+    std::ofstream stream(canonicalPath, std::ios::binary | std::ios::trunc);
+    if (!stream) {
+        return false;
+    }
+
+    stream.write(contents.data(), static_cast<std::streamsize>(contents.size()));
+    if (!stream.good()) {
+        return false;
+    }
+
+    LOG_INFO("saved fx file: {}", canonicalPath.string());
+    return true;
 }
 
 bool SC4EffectsExtensionsDirector::RefreshKnownEffects() {

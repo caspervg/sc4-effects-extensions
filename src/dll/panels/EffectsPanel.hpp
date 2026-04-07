@@ -2,6 +2,8 @@
 
 #include <array>
 #include <cstdint>
+#include <filesystem>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -9,11 +11,13 @@
 #include "public/ImGuiPanel.h"
 
 class SC4EffectsExtensionsDirector;
+class TextEditor;
 
 class EffectsPanel final : public ImGuiPanel
 {
 public:
     explicit EffectsPanel(SC4EffectsExtensionsDirector& director);
+    ~EffectsPanel() override;
 
     void SetDetectedGameVersion(uint16_t version);
     void SetVersionLabel(const char* version);
@@ -30,12 +34,17 @@ private:
         float scale = 1.0f;
     };
 
-    void RenderCatalogTab_();
-    void RenderConsoleTab_();
+    void RenderWorkspace_();
+    void RenderWorkspaceLeftPane_();
+    void RenderWorkspaceRightPane_();
     void RenderManualSpawn_();
     void RenderTrackedEffect_();
     void RenderEffectsList_();
+    void RenderEditor_();
     void RenderRecentEvents_();
+    void EnsureEditorSelection_();
+    void LoadSelectedFxFile_();
+    bool SaveSelectedFxFile_(bool refreshCatalog);
 
 private:
     SC4EffectsExtensionsDirector& director_;
@@ -46,4 +55,9 @@ private:
     std::array<char, 128> filterInput_{};
     TrackedTransformUiState trackedState_{};
     bool autoApplyTrackedTransform_ = true;
+    std::vector<std::filesystem::path> fxFiles_{};
+    int selectedFxFileIndex_ = -1;
+    std::filesystem::path loadedFxFilePath_;
+    std::unique_ptr<TextEditor> editor_;
+    bool editorDirty_ = false;
 };

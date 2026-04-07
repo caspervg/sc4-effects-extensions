@@ -70,6 +70,7 @@ public:
     [[nodiscard]] std::vector<RecentEvent> GetRecentEventsSnapshot() const;
     [[nodiscard]] std::vector<std::string> GetKnownEffectsSnapshot() const;
     [[nodiscard]] std::vector<EffectsCatalogSource> GetCatalogSourcesSnapshot() const;
+    [[nodiscard]] std::vector<std::filesystem::path> GetPluginFxFiles() const;
     [[nodiscard]] std::string GetEffectsStatsString() const;
     [[nodiscard]] std::string GetLastSpawnStatus() const;
     [[nodiscard]] TrackedEffectState GetTrackedEffectState() const;
@@ -79,6 +80,8 @@ public:
     bool SpawnTrackedEffectByName(const char* effectName, const TrackedEffectState& state);
     bool UpdateTrackedEffectTransform(const TrackedEffectState& state);
     void StopTrackedEffect();
+    bool ReadPluginFxFile(const std::filesystem::path& path, std::string& contents) const;
+    bool WritePluginFxFile(const std::filesystem::path& path, const std::string& contents);
     bool RefreshKnownEffects();
     bool DumpManagerMemory();
 
@@ -111,5 +114,6 @@ private:
     std::vector<EffectsCatalogSource> catalogSources_;
     std::string lastSpawnStatus_;
     TrackedEffectState trackedEffectState_;
+    std::filesystem::path pluginFxRoot_;
     std::filesystem::path packedEffectsOutputPath_;
 };
