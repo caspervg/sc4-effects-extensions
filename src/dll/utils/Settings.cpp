@@ -12,6 +12,7 @@ namespace {
     constexpr auto kDefaultLogLevel = spdlog::level::info;
     constexpr bool kDefaultLogToFile = true;
     constexpr bool kDefaultStartWindowVisible = true;
+    constexpr bool kDefaultLoadPluginFxRecursively = false;
     constexpr auto kSectionName = "SC4EffectsExtensions";
 
     std::string ToLower(std::string value)
@@ -60,6 +61,7 @@ Settings::Settings()
     : logLevel_(kDefaultLogLevel)
     , logToFile_(kDefaultLogToFile)
     , startWindowVisible_(kDefaultStartWindowVisible)
+    , loadPluginFxRecursively_(kDefaultLoadPluginFxRecursively)
 {
 }
 
@@ -103,6 +105,23 @@ void Settings::Load(const std::filesystem::path& settingsFilePath)
                 LOG_WARN("Invalid StartWindowVisible in {}", settingsFilePath.string());
             }
         }
+
+        if (section.has("LoadPluginFxRecursively")) {
+            bool valid = false;
+            loadPluginFxRecursively_ = ParseBool(section.get("LoadPluginFxRecursively"), valid);
+            if (!valid) {
+                loadPluginFxRecursively_ = kDefaultLoadPluginFxRecursively;
+                LOG_WARN("Invalid LoadPluginFxRecursively in {}", settingsFilePath.string());
+            }
+        }
+
+        if (section.has("PluginFxRoot")) {
+            pluginFxRoot_ = section.get("PluginFxRoot");
+        }
+
+        if (section.has("PackedEffectsOutputPath")) {
+            packedEffectsOutputPath_ = section.get("PackedEffectsOutputPath");
+        }
     }
     catch (const std::exception& e) {
         LOG_ERROR("Failed to read settings from {}: {}", settingsFilePath.string(), e.what());
@@ -123,5 +142,20 @@ bool Settings::GetLogToFile() const noexcept
 bool Settings::GetStartWindowVisible() const noexcept
 {
     return startWindowVisible_;
+}
+
+bool Settings::GetLoadPluginFxRecursively() const noexcept
+{
+    return loadPluginFxRecursively_;
+}
+
+std::filesystem::path Settings::GetPluginFxRoot() const
+{
+    return pluginFxRoot_;
+}
+
+std::filesystem::path Settings::GetPackedEffectsOutputPath() const
+{
+    return packedEffectsOutputPath_;
 }
 
