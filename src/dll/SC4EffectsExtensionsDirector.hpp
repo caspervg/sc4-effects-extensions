@@ -29,6 +29,7 @@ class SC4EffectsExtensionsDirector final : public cRZMessage2COMDirector
 public:
     enum class EventSeverity {
         Info,
+        Success,
         Warning,
         Error,
     };
@@ -78,8 +79,6 @@ public:
     bool SpawnTrackedEffectByName(const char* effectName, const TrackedEffectState& state);
     bool UpdateTrackedEffectTransform(const TrackedEffectState& state);
     void StopTrackedEffect();
-    void RecordHookEvent(std::string_view line);
-    void RecordConsoleEvent(EventSeverity severity, std::string_view line);
     bool RefreshKnownEffects();
     bool DumpManagerMemory();
 

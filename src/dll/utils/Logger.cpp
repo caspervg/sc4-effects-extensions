@@ -2,10 +2,30 @@
 
 #include <cstdlib>
 #include <filesystem>
+#include <mutex>
+#include <string>
 #include <vector>
 
+#include "spdlog/sinks/base_sink.h"
 #include "spdlog/sinks/basic_file_sink.h"
 #include "spdlog/sinks/msvc_sink.h"
+
+namespace {
+class ImGuiConsoleSink final : public spdlog::sinks::base_sink<std::mutex>
+{
+protected:
+    void sink_it_(const spdlog::details::log_msg& msg) override
+    {
+        spdlog::memory_buf_t formatted;
+        base_sink<std::mutex>::formatter_->format(msg, formatted);
+        Logger::DispatchConsoleMessage(msg.level, std::string_view(formatted.data(), formatted.size()));
+    }
+
+    void flush_() override
+    {
+    }
+};
+}
 
 std::shared_ptr<spdlog::logger> Logger::Get()
 {
@@ -26,6 +46,7 @@ void Logger::Initialize(const std::string& logName, const std::string& userDir, 
     try {
         std::vector<spdlog::sink_ptr> sinks;
         sinks.push_back(std::make_shared<spdlog::sinks::msvc_sink_mt>());
+        sinks.push_back(std::make_shared<ImGuiConsoleSink>());
 
         std::filesystem::path logDir;
         if (!userDir.empty()) {
@@ -69,6 +90,18 @@ void Logger::SetLevel(const spdlog::level::level_enum logLevel)
     }
 }
 
+void Logger::SetConsoleCallback(ConsoleCallback callback)
+{
+    s_consoleCallback = std::move(callback);
+}
+
+void Logger::DispatchConsoleMessage(const spdlog::level::level_enum level, const std::string_view message)
+{
+    if (s_consoleCallback) {
+        s_consoleCallback(level, message);
+    }
+}
+
 void Logger::Shutdown()
 {
     if (s_logger) {
@@ -76,10 +109,12 @@ void Logger::Shutdown()
         s_logger.reset();
     }
     spdlog::shutdown();
+    s_consoleCallback = nullptr;
     s_initialized = false;
 }
 
 std::shared_ptr<spdlog::logger> Logger::s_logger = nullptr;
+Logger::ConsoleCallback Logger::s_consoleCallback = nullptr;
 std::string Logger::s_logName = "SC4EffectsExtensions";
 bool Logger::s_initialized = false;
 

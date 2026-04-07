@@ -59,6 +59,40 @@ constexpr ptrdiff_t kEffectsBootstrapParserObjectOffset = 0xC7C;
 constexpr uint32_t kPackedEffectsResourceType = 0xEA5118B0u;
 constexpr uint32_t kPackedEffectsResourceGroup = 0xEA5118B1u;
 
+SC4EffectsExtensionsDirector::EventSeverity ToEventSeverity(const spdlog::level::level_enum level) noexcept
+{
+    if (level >= spdlog::level::err) {
+        return SC4EffectsExtensionsDirector::EventSeverity::Error;
+    }
+    if (level >= spdlog::level::warn) {
+        return SC4EffectsExtensionsDirector::EventSeverity::Warning;
+    }
+    return SC4EffectsExtensionsDirector::EventSeverity::Info;
+}
+
+bool ContainsSuccessfully(const std::string_view message) noexcept
+{
+    constexpr std::string_view needle = "successfully";
+    if (message.size() < needle.size()) {
+        return false;
+    }
+
+    for (size_t i = 0; i <= message.size() - needle.size(); ++i) {
+        size_t j = 0;
+        while (j < needle.size()) {
+            if (std::tolower(static_cast<unsigned char>(message[i + j])) != needle[j]) {
+                break;
+            }
+            ++j;
+        }
+        if (j == needle.size()) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 void ApplyTrackedTransformState(cS3DTransform& transform, const SC4EffectsExtensionsDirector::TrackedEffectState& state) noexcept {
     EffectTransformParams params{};
     params.position[0] = state.position[0];
@@ -276,14 +310,18 @@ bool SC4EffectsExtensionsDirector::PreAppInit() { return true; }
 
 bool SC4EffectsExtensionsDirector::PostAppInit() {
     InitializeLogger_();
+    Logger::SetConsoleCallback([this](const spdlog::level::level_enum level, const std::string_view message) {
+        EventSeverity severity = ToEventSeverity(level);
+        if (severity == EventSeverity::Info && ContainsSuccessfully(message)) {
+            severity = EventSeverity::Success;
+        }
+        PushEventLine_(std::string(message), severity);
+    });
     const auto gameVersion = VersionDetection::GetInstance().GetGameVersion();
     LOG_INFO("PostAppInit");
     LOG_INFO("Detected game version: {}", gameVersion);
 
-    hooks_ = std::make_unique<EffectsBootstrapHooks>(EffectsBootstrapHooks::Callbacks{
-        .onInfoEvent = [this](const std::string_view line) { RecordHookEvent(line); },
-        .onParserError = [this](const std::string_view line) { RecordConsoleEvent(EventSeverity::Error, line); },
-    });
+    hooks_ = std::make_unique<EffectsBootstrapHooks>(EffectsBootstrapHooks::Callbacks{});
 
     cIGZMessageServer2Ptr pMS2;
     if (pMS2) {
@@ -308,17 +346,19 @@ bool SC4EffectsExtensionsDirector::PostAppInit() {
     }
     hooks_->ConfigureRecursiveLoading(settings.GetLoadPluginFxRecursively(), pluginFxRoot);
     effectsHookInstalled_ = hooks_->Install(gameVersion);
-    PushEventLine_(
-        effectsHookInstalled_ ? "effects hooks installed" : "failed to install effects hooks",
-        effectsHookInstalled_ ? EventSeverity::Info : EventSeverity::Warning);
+    if (effectsHookInstalled_) {
+        LOG_INFO("effects hooks installed");
+    } else {
+        LOG_WARN("failed to install effects hooks");
+    }
     LOG_INFO("Plugin .fx recursive loading: enabled={} root='{}'", settings.GetLoadPluginFxRecursively(), pluginFxRoot.string());
     LOG_INFO("Packed effects output path: '{}'", packedEffectsOutputPath_.string());
 
     if (!packedEffectsOutputPath_.empty()) {
         if (EnsurePackedEffectsSaveSegment_()) {
-            PushEventLine_("packed effects DB segment registered");
+            LOG_INFO("packed effects DB segment registered");
         } else {
-            PushEventLine_("failed to register packed effects DB segment", EventSeverity::Warning);
+            LOG_WARN("failed to register packed effects DB segment");
         }
     }
 
@@ -360,6 +400,7 @@ bool SC4EffectsExtensionsDirector::PostAppShutdown() {
         hooks_.reset();
     }
     effectsHookInstalled_ = false;
+    Logger::SetConsoleCallback(nullptr);
     Logger::Shutdown();
     return true;
 }
@@ -467,7 +508,7 @@ bool SC4EffectsExtensionsDirector::SpawnEffectByName(const char* effectName) {
         std::scoped_lock lock(effectsMutex_);
         lastSpawnStatus_ = "Spawned '" + requestedName + "' with default transition.";
     }
-    PushEventLine_("manual spawn: " + requestedName);
+    LOG_INFO("manual spawn: {}", requestedName);
     return true;
 }
 
@@ -512,7 +553,7 @@ bool SC4EffectsExtensionsDirector::SpawnTrackedEffectByName(const char* effectNa
         lastSpawnStatus_ = "Spawned tracked '" + requestedName + "'.";
     }
 
-    PushEventLine_("tracked spawn: " + requestedName);
+    LOG_INFO("tracked spawn: {}", requestedName);
     return true;
 }
 
@@ -565,16 +606,8 @@ void SC4EffectsExtensionsDirector::StopTrackedEffect() {
     pTrackedEffect->Release();
 
     if (!effectName.empty()) {
-        PushEventLine_("tracked stop: " + effectName);
+        LOG_INFO("tracked stop: {}", effectName);
     }
-}
-
-void SC4EffectsExtensionsDirector::RecordHookEvent(std::string_view line) {
-    PushEventLine_(std::string(line));
-}
-
-void SC4EffectsExtensionsDirector::RecordConsoleEvent(const EventSeverity severity, std::string_view line) {
-    PushEventLine_(std::string(line), severity);
 }
 
 bool SC4EffectsExtensionsDirector::RefreshKnownEffects() {
@@ -583,8 +616,7 @@ bool SC4EffectsExtensionsDirector::RefreshKnownEffects() {
 
 bool SC4EffectsExtensionsDirector::DumpManagerMemory() {
     if (!effectsManager_) {
-        LOG_INFO("manager dump: no active effects manager");
-        PushEventLine_("manager dump: no active effects manager", EventSeverity::Warning);
+        LOG_WARN("manager dump: no active effects manager");
         return false;
     }
 
@@ -855,7 +887,6 @@ bool SC4EffectsExtensionsDirector::DumpManagerMemory() {
 
     for (std::string& line : lines) {
         LOG_INFO(line);
-        PushEventLine_(std::move(line));
     }
     return true;
 }
@@ -868,7 +899,7 @@ void SC4EffectsExtensionsDirector::PostCityInit_(const cIGZMessage2Standard* pSt
     effectsManager_ = city_->GetEffectsManager();
     if (!effectsManager_) return;
     effectsManager_->AddRef();
-    PushEventLine_("city init: acquired effects manager");
+    LOG_INFO("city init: acquired effects manager");
     RefreshKnownEffects_();
 }
 
@@ -952,7 +983,7 @@ bool SC4EffectsExtensionsDirector::RefreshKnownEffects_() {
 
     const EffectsCatalogSnapshot probe = EffectsCatalogProbe::ProbePrimaryHash(effectsManager_);
     if (probe.names.empty()) {
-        PushEventLine_("catalog probe: no validated effect list found", EventSeverity::Warning);
+        LOG_WARN("catalog probe: no validated effect list found");
         return false;
     }
 
@@ -970,7 +1001,7 @@ bool SC4EffectsExtensionsDirector::RefreshKnownEffects_() {
         probe.names.size(),
         probe.sources.size());
     DumpKnownEffectsToLog_(probe.names, probe.sources);
-    PushEventLine_(buffer);
+    LOG_INFO(buffer);
     return true;
 }
 

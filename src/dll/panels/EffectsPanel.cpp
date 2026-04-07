@@ -197,7 +197,9 @@ void EffectsPanel::RenderRecentEvents_()
 
     ImGui::BeginChild("recent_effect_events", ImVec2(0.0f, 0.0f), true);
     for (const auto& event : recentEvents) {
-        if (event.severity == SC4EffectsExtensionsDirector::EventSeverity::Error) {
+        if (event.severity == SC4EffectsExtensionsDirector::EventSeverity::Success) {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.20f, 0.72f, 0.33f, 1.0f));
+        } else if (event.severity == SC4EffectsExtensionsDirector::EventSeverity::Error) {
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.93f, 0.28f, 0.24f, 1.0f));
         } else if (event.severity == SC4EffectsExtensionsDirector::EventSeverity::Warning) {
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.69f, 0.20f, 1.0f));
