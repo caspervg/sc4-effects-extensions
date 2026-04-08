@@ -1,13 +1,29 @@
 #include "EffectsPanel.hpp"
 
+#include <algorithm>
+#include <cctype>
 #include <cstdio>
+#include <initializer_list>
 #include <memory>
+#include <string>
 
 #include "TextEditor.h"
 #include "../SC4EffectsExtensionsDirector.hpp"
 
 namespace
 {
+std::string NormalizeEditorToken(std::string value)
+{
+    std::transform(
+        value.begin(),
+        value.end(),
+        value.begin(),
+        [](unsigned char ch) {
+            return static_cast<char>(std::toupper(ch));
+        });
+    return value;
+}
+
 const TextEditor::LanguageDefinition& GetSc4FxLanguageDefinition()
 {
     static TextEditor::LanguageDefinition languageDefinition = [] {
@@ -15,73 +31,57 @@ const TextEditor::LanguageDefinition& GetSc4FxLanguageDefinition()
         definition.mName = "SC4 FX";
         definition.mCaseSensitive = false;
         definition.mAutoIndentation = true;
-        definition.mCommentStart = "/*";
-        definition.mCommentEnd = "*/";
-        definition.mSingleLineComment = "//";
+        definition.mCommentStart = "#<";
+        definition.mCommentEnd = "#>";
+        definition.mSingleLineComment.clear();
+        definition.mPreprocChar = '\0';
 
-        definition.mKeywords = {
-            "alpha",
-            "aspect",
-            "attractor",
-            "automataEffect",
-            "brushEffect",
-            "cameraEffect",
-            "color",
-            "decal",
-            "decalEffect",
-            "dynamicParticles",
-            "effect",
-            "effectsResource",
-            "emit",
-            "flashEffect",
-            "length",
-            "life",
-            "light",
-            "loadResource",
-            "model",
-            "modelID",
-            "particleEffect",
-            "particles",
-            "play",
-            "rate",
-            "scrubberEffect",
-            "sequence",
-            "sequenceEffect",
-            "shakeEffect",
-            "size",
-            "soundEffect",
-            "source",
-            "strength",
-            "testEffect",
-            "texture",
-            "textureID",
-            "tintEffect",
-            "vector",
-            "visualEffect",
-            "wait"
+        const auto addKeywords = [&definition](std::initializer_list<const char*> keywords) {
+            for (const char* keyword : keywords) {
+                definition.mKeywords.insert(NormalizeEditorToken(keyword));
+            }
         };
 
-        definition.mIdentifiers = {
-            {"-draw", {}},
-            {"-emitScale", {}},
-            {"-epicentre", {}},
-            {"-hard", {}},
-            {"-hardStart", {}},
-            {"-lod", {}},
-            {"-lodRange", {}},
-            {"-loop", {}},
-            {"-noAutoStop", {}},
-            {"-noOverlap", {}},
-            {"-offset", {}},
-            {"-rotate", {}},
-            {"-rotateX", {}},
-            {"-rotateY", {}},
-            {"-rotateZ", {}},
-            {"-scale", {}},
-            {"-sizeScale", {}},
-            {"-sortOffset", {}},
-            {"-sourceScale", {}}
+        const auto addIdentifiers = [&definition](std::initializer_list<const char*> identifiers, const char* declaration) {
+            for (const char* identifier : identifiers) {
+                TextEditor::Identifier id;
+                id.mDeclaration = declaration;
+                definition.mIdentifiers.insert(std::make_pair(NormalizeEditorToken(identifier), id));
+            }
         };
+
+        addKeywords({
+            "alpha", "alpha255", "align", "amplitude", "aspect", "automataEffect", "brushEffect",
+            "brushID", "camera", "cameraEffect", "chainEffect", "color", "color255", "collide",
+            "collision", "colour", "colour255", "create", "decal", "decalEffect", "define",
+            "demolishEffect", "dynamicParticle", "dynamicParticleEffect", "effect", "effectBase",
+            "effectGroup", "effectID", "effectsResource", "emit", "end", "enddef", "eval",
+            "flashEffect", "force", "frequency", "friction", "gameEffect", "inject", "instance",
+            "length", "life", "light", "loadResource", "maintain", "mass", "messageTrigger",
+            "model", "modelID", "namespace", "option", "optionGroup", "particleEffect",
+            "particleSequence", "particles", "play", "property", "randomWalk", "rate",
+            "rotate", "rule", "scrubberEffect", "select", "sequence", "sequenceEffect",
+            "set", "setc", "setf", "seti", "setPriority", "setv3", "shake", "shakeAspect",
+            "shakeEffect", "size", "soundEffect", "soundID", "source", "strength", "stretch",
+            "table", "terrainRepel", "testEffect", "texture", "textureID", "timedEffect",
+            "tintEffect", "vendor", "visualEffect", "wait", "warp", "zoom"
+        });
+
+        addIdentifiers({
+            "alpha", "alpha255", "align", "amplitude", "aspect", "automataEffect", "brushEffect",
+            "brushID", "camera", "cameraEffect", "chainEffect", "color", "color255", "collide",
+            "collision", "colour", "colour255", "create", "decal", "decalEffect", "define",
+            "demolishEffect", "dynamicParticle", "dynamicParticleEffect", "effect", "effectBase",
+            "effectGroup", "effectID", "effectsResource", "emit", "end", "enddef", "eval",
+            "flashEffect", "force", "frequency", "friction", "gameEffect", "inject", "instance",
+            "length", "life", "light", "loadResource", "maintain", "mass", "messageTrigger",
+            "model", "modelID", "namespace", "particleEffect", "particleSequence", "particles",
+            "play", "randomWalk", "rate", "rotate", "scrubberEffect", "select", "sequence",
+            "sequenceEffect", "set", "setc", "setf", "seti", "setPriority", "setv3", "shake",
+            "shakeAspect", "shakeEffect", "size", "soundEffect", "soundID", "source", "strength",
+            "stretch", "table", "terrainRepel", "testEffect", "texture", "textureID",
+            "timedEffect", "tintEffect", "visualEffect", "wait", "warp", "zoom"
+        }, "SC4 FX keyword");
 
         definition.mTokenRegexStrings.push_back(
             std::make_pair<std::string, TextEditor::PaletteIndex>("L?\\\"(\\\\.|[^\\\"])*\\\"", TextEditor::PaletteIndex::String));
@@ -90,11 +90,13 @@ const TextEditor::LanguageDefinition& GetSc4FxLanguageDefinition()
         definition.mTokenRegexStrings.push_back(
             std::make_pair<std::string, TextEditor::PaletteIndex>("[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?", TextEditor::PaletteIndex::Number));
         definition.mTokenRegexStrings.push_back(
+            std::make_pair<std::string, TextEditor::PaletteIndex>("\\$\\{?[a-zA-Z_][a-zA-Z0-9_]*(?::[a-zA-Z_][a-zA-Z0-9_]*)?\\}?", TextEditor::PaletteIndex::PreprocIdentifier));
+        definition.mTokenRegexStrings.push_back(
             std::make_pair<std::string, TextEditor::PaletteIndex>("-[a-zA-Z_][a-zA-Z0-9_]*", TextEditor::PaletteIndex::KnownIdentifier));
         definition.mTokenRegexStrings.push_back(
             std::make_pair<std::string, TextEditor::PaletteIndex>("[a-zA-Z_][a-zA-Z0-9_]*", TextEditor::PaletteIndex::Identifier));
         definition.mTokenRegexStrings.push_back(
-            std::make_pair<std::string, TextEditor::PaletteIndex>("[\\[\\]\\{\\}\\!\\%\\^\\&\\*\\(\\)\\-\\+\\=\\~\\|\\<\\>\\?\\/\\;\\,\\.]", TextEditor::PaletteIndex::Punctuation));
+            std::make_pair<std::string, TextEditor::PaletteIndex>("[\\[\\]\\{\\}\\!\\%\\^\\&\\*\\(\\)\\-\\+\\=\\~\\|\\<\\>\\?\\/\\;\\,\\.\\:]", TextEditor::PaletteIndex::Punctuation));
 
         return definition;
     }();
