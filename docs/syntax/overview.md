@@ -12,6 +12,11 @@ It is not just a static data file format. The recovered syntax supports:
 - macros
 - deferred parsing with `eval`
 
+The parser distinguishes between:
+
+- variables, substituted with `$...`
+- macro parameters, substituted with `%...`
+
 It is still not a general scripting language. No loops, conditionals, or
 recursion have been recovered.
 
