@@ -91,7 +91,6 @@ private:
     static std::filesystem::path GetUserPluginsPath_();
     void InitializeLogger_();
     void PushEventLine_(std::string line, EventSeverity severity = EventSeverity::Info);
-    void DumpKnownEffectsToLog_(const std::vector<std::string>& names, const std::vector<EffectsCatalogSource>& sources) const;
     bool RefreshKnownEffects_();
     bool EnsurePackedEffectsSaveSegment_();
     void ReleasePackedEffectsSaveSegment_() noexcept;

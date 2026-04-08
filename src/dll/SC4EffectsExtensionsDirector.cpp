@@ -323,7 +323,7 @@ bool SC4EffectsExtensionsDirector::PostAppInit() {
     InitializeLogger_();
     Logger::SetConsoleCallback([this](const spdlog::level::level_enum level, const std::string_view message) {
         EventSeverity severity = ToEventSeverity(level);
-        if (severity == EventSeverity::Info && ContainsSuccessfully(message)) {
+        if (ContainsSuccessfully(message)) {
             severity = EventSeverity::Success;
         }
         PushEventLine_(std::string(message), severity);
@@ -1064,26 +1064,6 @@ void SC4EffectsExtensionsDirector::PushEventLine_(std::string line, const EventS
     }
 }
 
-void SC4EffectsExtensionsDirector::DumpKnownEffectsToLog_(
-    const std::vector<std::string>& names,
-    const std::vector<EffectsCatalogSource>& sources) const
-{
-    LOG_INFO("effects catalog dump begin: {} merged effects from {} sources", names.size(), sources.size());
-    for (const auto& source : sources) {
-        LOG_INFO(
-            "effects catalog source: label=\"{}\" count={} offset=0x{:X} elem=0x{:X} string=0x{:X}",
-            source.label,
-            source.names.size(),
-            static_cast<unsigned int>(source.vectorOffset),
-            static_cast<unsigned int>(source.elementSize),
-            static_cast<unsigned int>(source.stringOffset));
-    }
-    for (const std::string& name : names) {
-        LOG_INFO("effects catalog entry: {}", name);
-    }
-    LOG_INFO("effects catalog dump end");
-}
-
 bool SC4EffectsExtensionsDirector::RefreshKnownEffects_() {
     if (!effectsManager_) return false;
     if (VersionDetection::GetInstance().GetGameVersion() != kSupportedGameVersionForCatalogProbe) return false;
@@ -1107,7 +1087,6 @@ bool SC4EffectsExtensionsDirector::RefreshKnownEffects_() {
         "catalog probe: %zu effects from %zu validated tables",
         probe.names.size(),
         probe.sources.size());
-    DumpKnownEffectsToLog_(probe.names, probe.sources);
     LOG_INFO(buffer);
     return true;
 }

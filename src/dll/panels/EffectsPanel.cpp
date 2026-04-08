@@ -5,6 +5,9 @@
 #include <cstdio>
 #include <initializer_list>
 #include <memory>
+#include <optional>
+#include <regex>
+#include <string.h>
 #include <string>
 
 #include "TextEditor.h"
@@ -22,6 +25,64 @@ std::string NormalizeEditorToken(std::string value)
             return static_cast<char>(std::toupper(ch));
         });
     return value;
+}
+
+std::optional<int> TryExtractLineNumberForFile(const std::string& text, const std::filesystem::path& filePath)
+{
+    if (text.empty() || filePath.empty()) {
+        return std::nullopt;
+    }
+
+    const std::string fullPath = filePath.string();
+    const std::string fileName = filePath.filename().string();
+
+    const std::regex fileLinePattern(R"(([^:\r\n]+\.fx)[(: ]+([0-9]+))", std::regex_constants::icase);
+    for (std::sregex_iterator it(text.begin(), text.end(), fileLinePattern), end; it != end; ++it) {
+        const std::string matchedPath = (*it)[1].str();
+        if (_stricmp(matchedPath.c_str(), fullPath.c_str()) == 0 || _stricmp(matchedPath.c_str(), fileName.c_str()) == 0) {
+            return std::max(1, std::stoi((*it)[2].str()));
+        }
+    }
+
+    const std::regex genericLinePattern(R"(\bline\s+([0-9]+)\b)", std::regex_constants::icase);
+    std::smatch genericMatch;
+    if ((text.find(fullPath) != std::string::npos || text.find(fileName) != std::string::npos)
+        && std::regex_search(text, genericMatch, genericLinePattern)) {
+        return std::max(1, std::stoi(genericMatch[1].str()));
+    }
+
+    return std::nullopt;
+}
+
+std::string ToggleSc4BlockComment(std::string text)
+{
+    const size_t first = text.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) {
+        return "#<\n#>";
+    }
+
+    const size_t last = text.find_last_not_of(" \t\r\n");
+    const bool hasOpen = first + 2 <= text.size() && text.compare(first, 2, "#<") == 0;
+    const bool hasClose = last != std::string::npos && last >= 1 && text.compare(last - 1, 2, "#>") == 0;
+
+    if (hasOpen && hasClose) {
+        text.erase(last - 1, 2);
+        text.erase(first, 2);
+
+        if (first < text.size() && text[first] == '\n') {
+            text.erase(first, 1);
+        }
+        if (!text.empty()) {
+            const size_t closePos = text.find_last_not_of(" \t\r\n");
+            if (closePos != std::string::npos && closePos + 1 < text.size() && text[closePos + 1] == '\n') {
+                text.erase(closePos + 1, 1);
+            }
+        }
+
+        return text;
+    }
+
+    return "#<\n" + text + "\n#>";
 }
 
 const TextEditor::LanguageDefinition& GetSc4FxLanguageDefinition()
@@ -92,6 +153,8 @@ const TextEditor::LanguageDefinition& GetSc4FxLanguageDefinition()
         definition.mTokenRegexStrings.push_back(
             std::make_pair<std::string, TextEditor::PaletteIndex>("\\$\\{?[a-zA-Z_][a-zA-Z0-9_]*(?::[a-zA-Z_][a-zA-Z0-9_]*)?\\}?", TextEditor::PaletteIndex::PreprocIdentifier));
         definition.mTokenRegexStrings.push_back(
+            std::make_pair<std::string, TextEditor::PaletteIndex>("%\\{?[a-zA-Z_][a-zA-Z0-9_]*(?::[a-zA-Z_][a-zA-Z0-9_]*)?\\}?", TextEditor::PaletteIndex::Preprocessor));
+        definition.mTokenRegexStrings.push_back(
             std::make_pair<std::string, TextEditor::PaletteIndex>("-[a-zA-Z_][a-zA-Z0-9_]*", TextEditor::PaletteIndex::KnownIdentifier));
         definition.mTokenRegexStrings.push_back(
             std::make_pair<std::string, TextEditor::PaletteIndex>("[a-zA-Z_][a-zA-Z0-9_]*", TextEditor::PaletteIndex::Identifier));
@@ -122,6 +185,7 @@ EffectsPanel::EffectsPanel(SC4EffectsExtensionsDirector& director)
     editor_->SetLanguageDefinition(GetSc4FxLanguageDefinition());
     editor_->SetPalette(TextEditor::GetDarkPalette());
     editor_->SetShowWhitespaces(false);
+    editor_->SetTabSize(2);
 }
 
 EffectsPanel::~EffectsPanel() = default;
@@ -168,18 +232,9 @@ void EffectsPanel::RenderWorkspace_()
 
     const float consoleHeight = 220.0f;
     const float topHeight = std::max(120.0f, ImGui::GetContentRegionAvail().y - consoleHeight - ImGui::GetStyle().ItemSpacing.y);
-    const float leftWidth = 360.0f;
 
     ImGui::BeginChild("workspace_top", ImVec2(0.0f, topHeight), false);
-    ImGui::BeginChild("workspace_left", ImVec2(leftWidth, 0.0f), true);
-    RenderWorkspaceLeftPane_();
-    ImGui::EndChild();
-
-    ImGui::SameLine();
-
-    ImGui::BeginChild("workspace_right", ImVec2(0.0f, 0.0f), true);
     RenderWorkspaceRightPane_();
-    ImGui::EndChild();
     ImGui::EndChild();
 
     ImGui::Spacing();
@@ -188,57 +243,65 @@ void EffectsPanel::RenderWorkspace_()
     ImGui::EndChild();
 }
 
-void EffectsPanel::RenderWorkspaceLeftPane_()
+void EffectsPanel::RenderWorkspaceRightPane_()
 {
     RenderManualSpawn_();
     ImGui::Separator();
     RenderTrackedEffect_();
     ImGui::Separator();
-    RenderEffectsList_();
-}
-
-void EffectsPanel::RenderWorkspaceRightPane_()
-{
     RenderEditor_();
 }
 
 void EffectsPanel::RenderManualSpawn_()
 {
-    ImGui::TextUnformatted("Manual spawn");
+    ImGui::TextUnformatted("Spawn");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(280.0f);
     ImGui::InputTextWithHint("##spawn_effect_name", "Effect name", spawnInput_.data(), spawnInput_.size());
 
+    const auto effects = director_.GetKnownEffectsSnapshot();
+    const std::string filter = filterInput_.data();
+    std::string selectedLabel = spawnInput_.data();
+    if (selectedLabel.empty()) {
+        selectedLabel = "<select parsed effect>";
+    }
+
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(260.0f);
+    if (ImGui::BeginCombo("##parsed_effects", selectedLabel.c_str(), ImGuiComboFlags_HeightLarge)) {
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::InputTextWithHint("##effect_filter", "Filter effects", filterInput_.data(), filterInput_.size());
+        ImGui::Separator();
+
+        int visibleCount = 0;
+        for (const std::string& effectName : effects) {
+            if (!filter.empty() && effectName.find(filter) == std::string::npos) {
+                continue;
+            }
+
+            ++visibleCount;
+            const bool selected = selectedLabel == effectName;
+            if (ImGui::Selectable(effectName.c_str(), selected)) {
+                std::snprintf(spawnInput_.data(), spawnInput_.size(), "%s", effectName.c_str());
+            }
+            if (selected) {
+                ImGui::SetItemDefaultFocus();
+            }
+        }
+
+        if (visibleCount == 0) {
+            ImGui::TextDisabled("No matching effects");
+        }
+
+        ImGui::EndCombo();
+    }
+
+    ImGui::SameLine();
     if (ImGui::Button("Spawn")) {
         director_.SpawnEffectByName(spawnInput_.data());
     }
 
-    const std::string lastStatus = director_.GetLastSpawnStatus();
-    if (!lastStatus.empty()) {
-        ImGui::Spacing();
-        ImGui::TextWrapped("%s", lastStatus.c_str());
-    }
-}
-
-void EffectsPanel::RenderTrackedEffect_()
-{
-    ImGui::TextUnformatted("Tracked effect");
-    ImGui::Checkbox("Auto-apply transform", &autoApplyTrackedTransform_);
-
-    const auto trackedState = director_.GetTrackedEffectState();
-    if (trackedState.active) {
-        trackedState_.active = true;
-    }
-
-    if (trackedState.active) {
-        ImGui::Text("Active: %s", trackedState.name.c_str());
-    } else {
-        ImGui::TextUnformatted("Active: none");
-    }
-
-    bool changed = false;
-    changed |= ImGui::DragFloat3("Position", trackedState_.position, 1.0f);
-    changed |= ImGui::DragFloat3("Rotation XYZ", trackedState_.rotation, 1.0f);
-    changed |= ImGui::DragFloat("Scale", &trackedState_.scale, 0.01f, 0.01f, 100.0f, "%.2f");
-
+    ImGui::SameLine();
     if (ImGui::Button("Spawn tracked")) {
         SC4EffectsExtensionsDirector::TrackedEffectState nextState{};
         nextState.position[0] = trackedState_.position[0];
@@ -250,6 +313,49 @@ void EffectsPanel::RenderTrackedEffect_()
         nextState.scale = trackedState_.scale;
         director_.SpawnTrackedEffectByName(spawnInput_.data(), nextState);
     }
+
+    ImGui::SameLine();
+    if (ImGui::Button("Refresh catalog")) {
+        director_.RefreshKnownEffects();
+    }
+
+    ImGui::SameLine();
+    ImGui::TextDisabled("%d parsed", static_cast<int>(effects.size()));
+
+    const std::string lastStatus = director_.GetLastSpawnStatus();
+    if (!lastStatus.empty()) {
+        ImGui::SameLine();
+        ImGui::TextWrapped("%s", lastStatus.c_str());
+    }
+}
+
+void EffectsPanel::RenderTrackedEffect_()
+{
+    const auto trackedState = director_.GetTrackedEffectState();
+    if (trackedState.active) {
+        trackedState_.active = true;
+    }
+
+    ImGui::TextUnformatted("Tracked");
+    ImGui::SameLine();
+    if (trackedState.active) {
+        ImGui::Text("Active: %s", trackedState.name.c_str());
+    } else {
+        ImGui::TextUnformatted("Active: none");
+    }
+
+    ImGui::SameLine();
+    ImGui::Checkbox("Auto-apply", &autoApplyTrackedTransform_);
+
+    bool changed = false;
+    ImGui::SetNextItemWidth(250.0f);
+    changed |= ImGui::DragFloat3("Pos", trackedState_.position, 1.0f);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(250.0f);
+    changed |= ImGui::DragFloat3("Rot", trackedState_.rotation, 1.0f);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(110.0f);
+    changed |= ImGui::DragFloat("Scale", &trackedState_.scale, 0.01f, 0.01f, 100.0f, "%.2f");
 
     ImGui::SameLine();
     if (ImGui::Button("Apply transform")) {
@@ -282,41 +388,40 @@ void EffectsPanel::RenderTrackedEffect_()
     }
 }
 
-void EffectsPanel::RenderEffectsList_()
-{
-    ImGui::TextUnformatted("Catalog");
-    ImGui::InputTextWithHint("##effect_filter", "Filter effects", filterInput_.data(), filterInput_.size());
-    ImGui::SameLine();
-    if (ImGui::Button("Refresh")) {
-        director_.RefreshKnownEffects();
-    }
-
-    const auto effects = director_.GetKnownEffectsSnapshot();
-    const std::string filter = filterInput_.data();
-
-    ImGui::BeginChild("effects_catalog", ImVec2(0.0f, 0.0f), true);
-    for (const std::string& effectName : effects) {
-        if (!filter.empty() && effectName.find(filter) == std::string::npos) {
-            continue;
-        }
-
-        if (ImGui::Selectable(effectName.c_str(), false)) {
-            std::snprintf(spawnInput_.data(), spawnInput_.size(), "%s", effectName.c_str());
-        }
-    }
-    ImGui::EndChild();
-}
-
 void EffectsPanel::RenderEditor_()
 {
     const bool hasFile = selectedFxFileIndex_ >= 0 && selectedFxFileIndex_ < static_cast<int>(fxFiles_.size());
+    const std::string selectedFileLabel = loadedFxFilePath_.empty()
+        ? "<select .fx file>"
+        : loadedFxFilePath_.filename().string();
 
     if (ImGui::Button("Refresh files")) {
+        SaveCurrentEditorState_();
         fxFiles_ = director_.GetPluginFxFiles();
         if (selectedFxFileIndex_ >= static_cast<int>(fxFiles_.size())) {
             selectedFxFileIndex_ = fxFiles_.empty() ? -1 : 0;
         }
         LoadSelectedFxFile_();
+    }
+
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(260.0f);
+    if (ImGui::BeginCombo("##fx_file_selector", selectedFileLabel.c_str())) {
+        for (int i = 0; i < static_cast<int>(fxFiles_.size()); ++i) {
+            const auto label = fxFiles_[i].filename().string();
+            const bool selected = selectedFxFileIndex_ == i;
+            if (ImGui::Selectable(label.c_str(), selected)) {
+                selectedFxFileIndex_ = i;
+                LoadSelectedFxFile_();
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("%s", fxFiles_[i].string().c_str());
+            }
+            if (selected) {
+                ImGui::SetItemDefaultFocus();
+            }
+        }
+        ImGui::EndCombo();
     }
 
     ImGui::SameLine();
@@ -329,13 +434,6 @@ void EffectsPanel::RenderEditor_()
     ImGui::SameLine();
     ImGui::BeginDisabled(!hasFile);
     if (ImGui::Button("Save")) {
-        SaveSelectedFxFile_(false);
-    }
-    ImGui::EndDisabled();
-
-    ImGui::SameLine();
-    ImGui::BeginDisabled(!hasFile);
-    if (ImGui::Button("Save + Refresh")) {
         SaveSelectedFxFile_(true);
     }
     ImGui::EndDisabled();
@@ -347,21 +445,6 @@ void EffectsPanel::RenderEditor_()
 
     ImGui::Separator();
 
-    ImGui::BeginChild("fx_file_list", ImVec2(260.0f, 0.0f), true);
-    for (int i = 0; i < static_cast<int>(fxFiles_.size()); ++i) {
-        const auto label = fxFiles_[i].filename().string();
-        if (ImGui::Selectable(label.c_str(), selectedFxFileIndex_ == i)) {
-            selectedFxFileIndex_ = i;
-            LoadSelectedFxFile_();
-        }
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("%s", fxFiles_[i].string().c_str());
-        }
-    }
-    ImGui::EndChild();
-
-    ImGui::SameLine();
-
     ImGui::BeginChild("fx_editor_host", ImVec2(0.0f, 0.0f), false);
     if (loadedFxFilePath_.empty()) {
         ImGui::TextUnformatted("No .fx file selected.");
@@ -371,9 +454,15 @@ void EffectsPanel::RenderEditor_()
 
         const bool editorFocused = ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows);
         const bool ctrlPressed = ImGui::GetIO().KeyCtrl;
-        const bool shiftPressed = ImGui::GetIO().KeyShift;
         if (hasFile && editorFocused && ctrlPressed && ImGui::IsKeyPressed(ImGuiKey_S, false)) {
-            SaveSelectedFxFile_(shiftPressed);
+            SaveSelectedFxFile_(true);
+        }
+        if (editorFocused && ctrlPressed && ImGui::IsKeyPressed(ImGuiKey_Slash, false) && editor_->HasSelection()) {
+            const std::string previousClipboard = ImGui::GetClipboardText() ? ImGui::GetClipboardText() : "";
+            const std::string selectedText = editor_->GetSelectedText();
+            editor_->Cut();
+            editor_->InsertText(ToggleSc4BlockComment(selectedText));
+            ImGui::SetClipboardText(previousClipboard.c_str());
         }
     }
     ImGui::EndChild();
@@ -419,10 +508,92 @@ void EffectsPanel::EnsureEditorSelection_()
     }
 }
 
+void EffectsPanel::SaveCurrentEditorState_()
+{
+    if (!editor_ || loadedFxFilePath_.empty()) {
+        return;
+    }
+
+    const auto cursor = editor_->GetCursorPosition();
+    editorFileStates_[loadedFxFilePath_.native()] = EditorFileState{cursor.mLine, cursor.mColumn};
+}
+
+void EffectsPanel::RestoreEditorState_(const std::filesystem::path& path)
+{
+    if (!editor_ || path.empty()) {
+        return;
+    }
+
+    const auto it = editorFileStates_.find(path.native());
+    if (it == editorFileStates_.end()) {
+        editor_->SetCursorPosition(TextEditor::Coordinates(0, 0));
+        return;
+    }
+
+    editor_->SetCursorPosition(TextEditor::Coordinates(it->second.cursorLine, it->second.cursorColumn));
+}
+
+void EffectsPanel::ClearEditorDiagnostics_()
+{
+    if (!editor_) {
+        return;
+    }
+
+    editor_->SetErrorMarkers({});
+    editor_->SetBreakpoints({});
+}
+
+void EffectsPanel::ApplyRefreshDiagnostics_(const size_t eventCountBeforeRefresh)
+{
+    ClearEditorDiagnostics_();
+
+    if (!editor_ || loadedFxFilePath_.empty()) {
+        return;
+    }
+
+    const auto recentEvents = director_.GetRecentEventsSnapshot();
+    const size_t eventCountAfterRefresh = director_.GetRecentEventCount();
+    const size_t maxNewEvents = eventCountAfterRefresh > eventCountBeforeRefresh
+        ? std::min(recentEvents.size(), eventCountAfterRefresh - eventCountBeforeRefresh)
+        : recentEvents.size();
+
+    TextEditor::ErrorMarkers markers;
+    std::optional<int> firstLine;
+
+    for (size_t i = 0; i < maxNewEvents && i < recentEvents.size(); ++i) {
+        const auto& event = recentEvents[i];
+        if (event.severity != SC4EffectsExtensionsDirector::EventSeverity::Error) {
+            continue;
+        }
+
+        const auto lineNumber = TryExtractLineNumberForFile(event.text, loadedFxFilePath_);
+        if (!lineNumber.has_value()) {
+            continue;
+        }
+
+        const int zeroBasedLine = *lineNumber - 1;
+        if (zeroBasedLine < 0) {
+            continue;
+        }
+
+        markers.emplace(zeroBasedLine, event.text);
+        if (!firstLine.has_value() || zeroBasedLine < *firstLine) {
+            firstLine = zeroBasedLine;
+        }
+    }
+
+    editor_->SetErrorMarkers(markers);
+    if (firstLine.has_value()) {
+        editor_->SetCursorPosition(TextEditor::Coordinates(*firstLine, 0));
+    }
+}
+
 void EffectsPanel::LoadSelectedFxFile_()
 {
+    SaveCurrentEditorState_();
     loadedFxFilePath_.clear();
     editorDirty_ = false;
+    ClearEditorDiagnostics_();
 
     if (selectedFxFileIndex_ < 0 || selectedFxFileIndex_ >= static_cast<int>(fxFiles_.size())) {
         if (editor_) {
@@ -441,6 +612,7 @@ void EffectsPanel::LoadSelectedFxFile_()
 
     loadedFxFilePath_ = fxFiles_[selectedFxFileIndex_];
     editor_->SetText(contents);
+    RestoreEditorState_(loadedFxFilePath_);
 }
 
 bool EffectsPanel::SaveSelectedFxFile_(const bool refreshCatalog)
@@ -454,8 +626,14 @@ bool EffectsPanel::SaveSelectedFxFile_(const bool refreshCatalog)
     }
 
     editorDirty_ = false;
+    SaveCurrentEditorState_();
+
     if (refreshCatalog) {
+        const size_t eventCountBeforeRefresh = director_.GetRecentEventCount();
         director_.RefreshKnownEffects();
+        ApplyRefreshDiagnostics_(eventCountBeforeRefresh);
+    } else {
+        ClearEditorDiagnostics_();
     }
 
     return true;

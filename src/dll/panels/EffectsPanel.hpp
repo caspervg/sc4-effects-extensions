@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "imgui.h"
@@ -34,17 +35,24 @@ private:
         float scale = 1.0f;
     };
 
+    struct EditorFileState {
+        int cursorLine = 0;
+        int cursorColumn = 0;
+    };
+
     void RenderWorkspace_();
-    void RenderWorkspaceLeftPane_();
     void RenderWorkspaceRightPane_();
     void RenderManualSpawn_();
     void RenderTrackedEffect_();
-    void RenderEffectsList_();
     void RenderEditor_();
     void RenderRecentEvents_();
     void EnsureEditorSelection_();
+    void SaveCurrentEditorState_();
     void LoadSelectedFxFile_();
     bool SaveSelectedFxFile_(bool refreshCatalog);
+    void RestoreEditorState_(const std::filesystem::path& path);
+    void ClearEditorDiagnostics_();
+    void ApplyRefreshDiagnostics_(size_t eventCountBeforeRefresh);
 
 private:
     SC4EffectsExtensionsDirector& director_;
@@ -58,6 +66,7 @@ private:
     std::vector<std::filesystem::path> fxFiles_{};
     int selectedFxFileIndex_ = -1;
     std::filesystem::path loadedFxFilePath_;
+    std::unordered_map<std::wstring, EditorFileState> editorFileStates_{};
     std::unique_ptr<TextEditor> editor_;
     bool editorDirty_ = false;
 };
