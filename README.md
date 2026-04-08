@@ -98,3 +98,8 @@ cmake --preset vs2022-win32-debug -DSC4_ENABLE_PLUGIN_DEPLOYMENT=OFF
 - The template is intentionally Win32-only because SimCity 4 is a 32-bit game.
 - `sc4-render-services` must be built before the DLL because this template links against its `imgui.lib`.
 - `mINI` is consumed via vcpkg as the `pulzed-mini` port and included as `mini/ini.h`.
+
+## Docs
+
+Reader-facing documentation for the recovered SC4 effects syntax now lives in
+[`docs/README.md`](docs/README.md).
