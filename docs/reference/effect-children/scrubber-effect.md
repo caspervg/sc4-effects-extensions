@@ -31,4 +31,18 @@ Anonymous scrubber component inside an `effect`.
 
 - if no meaningful options are supplied, parsing throws
   `Need some options for anonymous scrubber effect`
+- `-demolish`, `-burn`, and `-toxic` clamp negative values to `0`
+- `-message <uint> [uint]` stores one required message id and one optional
+  trailing parameter
+- `-blob <1..8> <float> <float> [float]` stores a bounded shape selector plus
+  two required floats and an optional fourth float; if the fourth value is
+  omitted, one dimension is mirrored
+- `-rect <1..8> <float> <float> <float> [float]` stores a bounded shape
+  selector plus three required floats and an optional fourth float
+- pause-related switches accept an optional duration float
+- demolition-related switches pack several mode bits and an effect-ID byte into
+  one stored field
+- `demolishEffect`, `gameEffect`, and `mapEffect` are registered through this
+  same parser implementation and likely share most or all of this switch
+  surface
 - this command clearly affects city/simulation state, not only visuals

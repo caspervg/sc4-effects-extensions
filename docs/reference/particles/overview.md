@@ -20,6 +20,7 @@ A particle definition combines:
 - [rate, inject, maintain](./rate-inject-maintain.md)
 - [emit](./emit.md)
 - [force](./force.md)
+- [warp](./warp.md)
 - [randomWalk](./random-walk.md)
 - [collision](./collision.md)
 - [terrainRepel](./terrain-repel.md)
