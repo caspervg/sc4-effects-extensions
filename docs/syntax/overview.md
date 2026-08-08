@@ -10,6 +10,7 @@ It is not just a static data file format. The recovered syntax supports:
 - typed variables
 - namespaces
 - macros
+- loop-style macro expansion with `arrayCreate`
 - deferred parsing with `eval`
 
 The parser distinguishes between:
@@ -17,8 +18,9 @@ The parser distinguishes between:
 - variables, substituted with `$...`
 - macro parameters, substituted with `%...`
 
-It is still not a general scripting language. No loops, conditionals, or
-recursion have been recovered.
+It is still not a general scripting language. No conditionals or recursion have
+been recovered. The closest thing to a loop is `arrayCreate`, which repeatedly
+instantiates a named macro with generated `index` and `count` arguments.
 
 ## Main top-level families
 

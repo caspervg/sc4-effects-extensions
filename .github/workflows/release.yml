@@ -133,6 +133,7 @@ jobs:
     runs-on: windows-latest
     needs: detect-changes
     if: needs.detect-changes.outputs.dll == 'true'
+    runs-on: windows-2022
 
     steps:
       - uses: actions/checkout@v5
