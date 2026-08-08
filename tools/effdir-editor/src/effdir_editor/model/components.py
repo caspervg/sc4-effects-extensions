@@ -4,8 +4,9 @@ Wire order per effdir.md, "Component records", cross-checked against
 Ghidra Read() decompiles for each class (see per-class notes below).
 Sequence bits 0-2 and camera bits 0-3 are read via a generic operator>>
 (bitset<N>) rather than a direct scalar dispatch, matching the documented
-bit options, but this makes no wire-byte difference (bitsets always
-occupy one u32) so those two fields keep generic `value_XX` names.
+bit options. They retain their generic `value_XX` field names for path
+compatibility, but preserve the bitset wire type so the UI can expose their
+individual flags.
 """
 
 from __future__ import annotations
@@ -281,7 +282,7 @@ def write_sequence_item(writer: WriteCursor, item: SequenceItem) -> None:
 class SequenceDescription:
     marker: Raw[int]
     items: WireVector[SequenceItem]
-    value_18: Raw[int]  # likely carries loop/noOverlap/hardStart bits; unconfirmed
+    value_18: Raw[int]  # bitset<3>: sequence option bits 0-2
     preservation: RecordPreservation = field(default_factory=RecordPreservation)
 
 
@@ -289,7 +290,7 @@ def read_sequence(cursor: ReadCursor) -> SequenceDescription:
     return SequenceDescription(
         marker=read_u16(cursor),
         items=read_vector(cursor, read_sequence_item),
-        value_18=read_u32(cursor),
+        value_18=read_bitset(cursor, 3),
     )
 
 
@@ -303,7 +304,7 @@ def default_sequence() -> SequenceDescription:
     return SequenceDescription(
         marker=make_raw_u16(1),
         items=WireVector(count=0, items=[], source_span=None),
-        value_18=make_raw_u32(0),
+        value_18=make_raw_bitset(0, 3),
     )
 
 
@@ -353,7 +354,7 @@ def default_sound() -> SoundDescription:
 @dataclass
 class CameraDescription:
     marker: Raw[int]
-    value_0c: Raw[int]
+    value_0c: Raw[int]  # bitset<4>: camera option bits 0-3
     value_10: Raw[int]  # zoom-minus-one or rotation value (union-like)
     value_11: Raw[int]
     attach_radius: Raw[float]  # +0x14
@@ -362,7 +363,7 @@ class CameraDescription:
 def read_camera(cursor: ReadCursor) -> CameraDescription:
     return CameraDescription(
         marker=read_u16(cursor),
-        value_0c=read_u32(cursor),
+        value_0c=read_bitset(cursor, 4),
         value_10=read_u8(cursor),
         value_11=read_u8(cursor),
         attach_radius=read_f32(cursor),
@@ -380,7 +381,7 @@ def write_camera(writer: WriteCursor, c: CameraDescription) -> None:
 def default_camera() -> CameraDescription:
     return CameraDescription(
         marker=make_raw_u16(0),
-        value_0c=make_raw_u32(0),
+        value_0c=make_raw_bitset(0, 4),
         value_10=make_raw_u8(0),
         value_11=make_raw_u8(0),
         attach_radius=make_raw_f32(0.0),

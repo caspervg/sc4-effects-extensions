@@ -58,8 +58,11 @@ class MainFrame(wx.Frame):
             wx.aui.AuiPaneInfo()
             .Left()
             .Caption("Resource")
-            .MinSize(self.FromDIP((260, -1)))
-            .BestSize(self.FromDIP((320, -1)))
+            # AUI treats BestSize as a hint and otherwise tends to restore
+            # the narrow default dock width. Keep the resource tree wide
+            # enough for long effect names in the actual layout as well.
+            .MinSize(self.FromDIP((560, -1)))
+            .BestSize(self.FromDIP((680, -1)))
             .CloseButton(False),
         )
         self._mgr.AddPane(

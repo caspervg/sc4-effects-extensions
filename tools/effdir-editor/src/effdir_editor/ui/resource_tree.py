@@ -42,7 +42,7 @@ class ResourceTree(wx.Panel):
         self.search_status.SetFont(self.search_status.GetFont().Smaller())
 
         self.tree = dv.TreeListCtrl(self, style=dv.TL_SINGLE)
-        self.tree.AppendColumn("Node", width=220)
+        self.tree.AppendColumn("Node", width=self.FromDIP(440))
         self.tree.AppendColumn("Type", width=160)
         self.tree.AppendColumn("Evidence", width=90)
         self.tree.AppendColumn("Refs", width=50)
@@ -76,7 +76,7 @@ class ResourceTree(wx.Panel):
         for summary in api.list_nodes(self._session, path or None):
             label = self._short_label(summary.path)
             if summary.display_name:
-                label = f'{label} "{summary.display_name}"'
+                label = f'{self._named_item_label(summary.path)} "{summary.display_name}"'
             item = self.tree.AppendItem(parent_item, label)
             self.tree.SetItemText(item, 1, summary.record_type)
             self.tree.SetItemText(item, 2, summary.evidence)
@@ -93,6 +93,21 @@ class ResourceTree(wx.Panel):
             tail = path.rsplit(".", 1)[-1]
         else:
             tail = path
+        return tail
+
+    @staticmethod
+    def _named_item_label(path: str) -> str:
+        """Use a compact index for named vector items.
+
+        The parent collection already supplies the semantic type, while the
+        full path remains visible in the status bar. This keeps long effect
+        names from being preceded by a redundant ``effect_descriptions``
+        prefix and works equally well for other named vector entries.
+        """
+
+        tail = path.rsplit(".", 1)[-1]
+        if tail.endswith("]") and "[" in tail:
+            return tail[tail.rfind("[") :]
         return tail
 
     def _kind_of(self, path: str) -> str:

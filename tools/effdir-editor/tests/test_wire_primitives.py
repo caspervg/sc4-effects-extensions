@@ -12,6 +12,7 @@ from effdir_editor.wire.strings import (
 )
 from effdir_editor.wire.types import make_raw_f32, make_raw_u32, read_f32, read_u32, write_raw
 from effdir_editor.wire.vectors import read_vector, write_vector
+from effdir_editor.model.components import read_camera, read_sequence
 
 
 def test_scalar_round_trip():
@@ -161,3 +162,29 @@ def test_vector_fixed_size_bound_check_rejects_impossible_count():
     r = ReadCursor(w.getvalue())
     with pytest.raises(CursorError):
         read_vector(r, ReadCursor.f32, element_size=4)
+
+
+def test_sequence_option_word_keeps_bitset_type():
+    w = WriteCursor()
+    w.u16(1)  # marker
+    w.u32(0)  # empty item vector
+    w.u32(0b101)
+
+    sequence = read_sequence(ReadCursor(w.getvalue()))
+
+    assert sequence.value_18.wire_type == "bitset<3>"
+    assert sequence.value_18.value == 0b101
+
+
+def test_camera_option_word_keeps_bitset_type():
+    w = WriteCursor()
+    w.u16(0)  # marker
+    w.u32(0b1001)
+    w.u8(2)
+    w.u8(3)
+    w.f32(4.0)
+
+    camera = read_camera(ReadCursor(w.getvalue()))
+
+    assert camera.value_0c.wire_type == "bitset<4>"
+    assert camera.value_0c.value == 0b1001

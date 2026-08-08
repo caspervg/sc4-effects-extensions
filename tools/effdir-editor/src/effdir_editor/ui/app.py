@@ -16,6 +16,7 @@ class EffDirEditorApp(wx.App):
     def OnInit(self) -> bool:
         frame = MainFrame()
         frame.Show()
+        frame.Maximize(True)
         return True
 
 

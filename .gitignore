@@ -17,3 +17,4 @@
 *.ipch
 *.log
 *.pyc
+**/__pycache__/**

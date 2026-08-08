@@ -22,6 +22,29 @@ _MEMBER_ALIASES: Dict[Tuple[str, str], str] = {
     ("ParticleDescriptor", "flags_2"): "third_bitset",
 }
 
+# Names established directly by the wire-model notes, even where the
+# command catalog does not yet have one binding per bit. Unknown bits still
+# deliberately fall back to ``bit N``.
+_KNOWN_LABELS: Dict[Tuple[str, str], Dict[int, str]] = {
+    ("DecalDescriptor", "flags"): {
+        1: "light",
+        2: "water",
+        3: "repeat",
+        4: "cityScale",
+        5: "ring",
+        6: "static",
+    },
+    ("ScrubberDescription", "flags"): {
+        0: "noNetworks",
+        1: "noFlora",
+        2: "dezone",
+        3: "single",
+        4: "pauseSim",
+        5: "pauseSimHidden",
+        6: "pauseClock",
+    },
+}
+
 
 def bit_labels(record_type: str, attr_name: str, bit_count: int) -> List[str]:
     catalog_member = _MEMBER_ALIASES.get((record_type, attr_name), attr_name)
@@ -32,4 +55,8 @@ def bit_labels(record_type: str, attr_name: str, bit_count: int) -> List[str]:
         for bit_ref in binding.presence_bits:
             if bit_ref.member_path == catalog_member:
                 by_bit.setdefault(bit_ref.bit, []).append(binding.command_path)
-    return ["/".join(by_bit[i]) if i in by_bit else f"bit {i}" for i in range(bit_count)]
+    known = _KNOWN_LABELS.get((record_type, attr_name), {})
+    return [
+        known[i] if i in known else ("/".join(by_bit[i]) if i in by_bit else f"bit {i}")
+        for i in range(bit_count)
+    ]
