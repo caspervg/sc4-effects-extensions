@@ -376,9 +376,24 @@ class MainFrame(wx.Frame):
     def _remove_record(self, path: str) -> None:
         if wx.MessageBox(f"Remove {path}?", "Confirm removal", wx.YES_NO | wx.ICON_WARNING) != wx.YES:
             return
-        api.remove_record(self.session, path)
-        self.record_editor.show_record(self.session, None)
+        try:
+            api.remove_record(self.session, path)
+        except api.ReferenceIntegrityError as exc:
+            labels = [reference.label for reference in exc.references]
+            shown = labels[:8]
+            if len(labels) > len(shown):
+                shown.append(f"… and {len(labels) - len(shown)} more")
+            wx.MessageBox(
+                "Removal was blocked because these references would become dangling:\n\n"
+                + "\n".join(shown),
+                "Referenced record",
+                wx.OK | wx.ICON_WARNING,
+            )
+            return
+        parent_path = _paths.parent_path(path)
+        self.session.selected_path = parent_path
         self.tree.refresh()
+        self.tree.reveal(parent_path)
         self._refresh_hex()
         self._refresh_diagnostics()
         self._update_enabled_state()

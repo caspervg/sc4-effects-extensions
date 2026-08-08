@@ -114,7 +114,7 @@ class HexView(wx.ScrolledWindow):
                 elif self._is_opaque(pos):
                     dc.SetBrush(wx.Brush(opaque_bg))
                     dc.SetPen(wx.TRANSPARENT_PEN)
-                    dc.DrawRectangle(cell_x, y, 2 * self._char_w + 2, ROW_HEIGHT)
+                    dc.DrawRectangle(cell_x, y, 2 * self._char_w + 2, self._row_height)
                     dc.SetTextForeground(wx.WHITE)
                 else:
                     dc.SetTextForeground(text_colour)
@@ -132,7 +132,7 @@ class HexView(wx.ScrolledWindow):
                 elif self._is_opaque(pos):
                     dc.SetBrush(wx.Brush(opaque_bg))
                     dc.SetPen(wx.TRANSPARENT_PEN)
-                    dc.DrawRectangle(cell_x, y, self._char_w, ROW_HEIGHT)
+                    dc.DrawRectangle(cell_x, y, self._char_w, self._row_height)
                     dc.SetTextForeground(wx.WHITE)
                 else:
                     dc.SetTextForeground(text_colour)

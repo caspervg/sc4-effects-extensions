@@ -35,20 +35,25 @@ def test_truncated_read_raises():
         r.u32()
 
 
-# --- string length prefix, per effdir-editor-spec.md "String contract" ---
+# --- packed EFFDIR string framing -----------------------------------------
+#
+# Runtime evidence from the vanilla EFFDIR uses a little-endian u32 length,
+# despite effdir-editor-spec.md's stale description of a generic 7-bit
+# continuation helper used by another stream call site. See strings.py's
+# module-level evidence note.
 
 
 @pytest.mark.parametrize(
     "n,expected_bytes",
     [
-        (0, bytes([0x00])),
-        (1, bytes([0x01])),
-        (127, bytes([0x7F])),
-        (128, bytes([0x80, 0x01])),
-        (300, bytes([0xAC, 0x02])),
+        (0, bytes.fromhex("00 00 00 00")),
+        (1, bytes.fromhex("01 00 00 00")),
+        (127, bytes.fromhex("7F 00 00 00")),
+        (128, bytes.fromhex("80 00 00 00")),
+        (300, bytes.fromhex("2C 01 00 00")),
     ],
 )
-def test_string_length_encoding_matches_spec_examples(n, expected_bytes):
+def test_string_length_encoding_matches_effdir_runtime_format(n, expected_bytes):
     assert encode_string_length(n) == expected_bytes
 
 
@@ -64,8 +69,8 @@ def test_string_has_no_terminator_and_no_conversion():
     s = WireString.from_raw_bytes(b"hello")
     w = WriteCursor()
     write_wire_string(w, s)
-    # length byte (5) + 5 payload bytes, no trailing NUL
-    assert w.getvalue() == bytes([5]) + b"hello"
+    # u32 length (5) + 5 payload bytes, no trailing NUL
+    assert w.getvalue() == bytes.fromhex("05 00 00 00") + b"hello"
 
     r = ReadCursor(w.getvalue())
     decoded = read_wire_string(r)
@@ -91,7 +96,7 @@ def test_string_preserves_invalid_utf8_bytes():
 def test_empty_string_round_trip():
     w = WriteCursor()
     write_wire_string(w, WireString.from_text(""))
-    assert w.getvalue() == b"\x00"
+    assert w.getvalue() == b"\x00\x00\x00\x00"
     r = ReadCursor(w.getvalue())
     s = read_wire_string(r)
     assert s.raw_bytes == b""

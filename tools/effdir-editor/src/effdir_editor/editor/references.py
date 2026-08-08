@@ -48,6 +48,44 @@ class ReferenceIndex:
     names: Dict[int, str]  # effect_descriptions index -> its name, from effect_name_map
 
 
+def references_to_name(resource: EffDirResource, name: str) -> List[Reference]:
+    """Return name-based consumers that would break if an alias vanished."""
+
+    references: List[Reference] = []
+    for i, entry in enumerate(resource.effect_key_map.items):
+        if entry.name.decoded == name:
+            references.append(
+                Reference(
+                    path=f"effect_key_map[{i}]",
+                    label=(
+                        f'effect_key_map[{i}] "{name}" '
+                        f"(group 0x{entry.group_id.value:08X}, instance 0x{entry.instance_id.value:08X})"
+                    ),
+                )
+            )
+    for i, trigger in enumerate(resource.message_triggers.items):
+        if trigger.effect_name.decoded == name:
+            references.append(
+                Reference(
+                    path=f"message_triggers[{i}]",
+                    label=f'message_triggers[{i}] "{name}" (message 0x{trigger.message_id.value:08X})',
+                )
+            )
+    for i, sequence in enumerate(resource.components.sequences.items):
+        for j, item in enumerate(sequence.items.items):
+            if item.effect_name.decoded == name:
+                references.append(
+                    Reference(
+                        path=f"components.sequences[{i}].items[{j}]",
+                        label=(
+                            f'components.sequences[{i}].items[{j}] "{name}" '
+                            f"(play, timing {item.timing.x:g}/{item.timing.y:g})"
+                        ),
+                    )
+                )
+    return references
+
+
 def build_reference_index(resource: EffDirResource) -> ReferenceIndex:
     """Maps an `effect_descriptions` index to the entries that name it."""
 

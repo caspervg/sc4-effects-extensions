@@ -29,13 +29,21 @@ class ChangeSet:
 
 
 @dataclass
+class SessionState:
+    """One coherent undo/redo point, including its visible change history."""
+
+    working: EffDirResource
+    change_log: List[Change]
+
+
+@dataclass
 class EditorSession:
     handle: ResourceHandle
     source: EffDirSource
     original_bytes: bytes
     working: EffDirResource
-    undo_stack: List[EffDirResource] = field(default_factory=list)
-    redo_stack: List[EffDirResource] = field(default_factory=list)
+    undo_stack: List[SessionState] = field(default_factory=list)
+    redo_stack: List[SessionState] = field(default_factory=list)
     change_log: List[Change] = field(default_factory=list)
     selected_path: Optional[str] = None
 
@@ -48,7 +56,12 @@ class EditorSession:
         return {c.path for c in self.change_log}
 
     def snapshot(self) -> None:
-        self.undo_stack.append(copy.deepcopy(self.working))
+        self.undo_stack.append(
+            SessionState(
+                working=copy.deepcopy(self.working),
+                change_log=copy.deepcopy(self.change_log),
+            )
+        )
         self.redo_stack.clear()
 
     def record_change(self, path: str, before: Any, after: Any, reason: str = "user", warnings=None) -> Change:
@@ -59,14 +72,18 @@ class EditorSession:
     def undo(self) -> None:
         if not self.undo_stack:
             return
-        self.redo_stack.append(self.working)
-        self.working = self.undo_stack.pop()
+        self.redo_stack.append(SessionState(working=self.working, change_log=self.change_log))
+        state = self.undo_stack.pop()
+        self.working = state.working
+        self.change_log = state.change_log
 
     def redo(self) -> None:
         if not self.redo_stack:
             return
-        self.undo_stack.append(self.working)
-        self.working = self.redo_stack.pop()
+        self.undo_stack.append(SessionState(working=self.working, change_log=self.change_log))
+        state = self.redo_stack.pop()
+        self.working = state.working
+        self.change_log = state.change_log
 
 
 def open_session(source: EffDirSource, handle: ResourceHandle) -> EditorSession:

@@ -34,6 +34,7 @@ class ResourceTree(wx.Panel):
         self._search_results: List[str] = []
         self._search_cursor = -1
         self._search_timer: Optional[wx.CallLater] = None
+        self._suppress_selection = False
 
         self.search = wx.SearchCtrl(self, style=wx.TE_PROCESS_ENTER)
         self.search.SetDescriptiveText("Filter (Enter for next match)")
@@ -62,14 +63,69 @@ class ResourceTree(wx.Panel):
 
     def load(self, session: EditorSession) -> None:
         self._session = session
+        self.search.ChangeValue("")
         self._reset_search()
+        self._rebuild()
+
+    def _rebuild(self) -> None:
         self.tree.DeleteAllItems()
         root = self.tree.GetRootItem()
         self._append_children(root, "")
 
     def refresh(self) -> None:
-        if self._session is not None:
-            self.load(self._session)
+        if self._session is None:
+            return
+
+        expanded_paths = self._expanded_paths()
+        selected_item = self.tree.GetSelection()
+        selected_path = self.tree.GetItemData(selected_item) if selected_item.IsOk() else None
+        scroll_pos = self.tree.GetScrollPos(wx.VERTICAL)
+        current_match = (
+            self._search_results[self._search_cursor]
+            if 0 <= self._search_cursor < len(self._search_results)
+            else None
+        )
+
+        self._rebuild()
+        for expanded_path in sorted(expanded_paths, key=lambda p: len(_paths.tokenize(p))):
+            item = self._locate_path(expanded_path)
+            if item is not None:
+                self.tree.Expand(item)
+
+        if selected_path:
+            item = self._locate_path(selected_path)
+            if item is not None:
+                self._suppress_selection = True
+                try:
+                    self.tree.Select(item)
+                finally:
+                    self._suppress_selection = False
+
+        self._refresh_search_results(current_match)
+        wx.CallAfter(self._restore_scroll_position, scroll_pos)
+
+    def _expanded_paths(self) -> List[str]:
+        paths: List[str] = []
+
+        def visit(parent) -> None:
+            child = self.tree.GetFirstChild(parent)
+            while child.IsOk():
+                path = self.tree.GetItemData(child)
+                if path is not None and self.tree.IsExpanded(child):
+                    paths.append(path)
+                    visit(child)
+                child = self.tree.GetNextSibling(child)
+
+        visit(self.tree.GetRootItem())
+        return paths
+
+    def _restore_scroll_position(self, position: int) -> None:
+        try:
+            self.tree.SetScrollPos(wx.VERTICAL, position)
+            self.tree.Refresh()
+        except RuntimeError:
+            # A queued CallAfter may outlive the window during shutdown.
+            pass
 
     def _append_children(self, parent_item, path: str) -> None:
         assert self._session is not None
@@ -135,6 +191,8 @@ class ResourceTree(wx.Panel):
         self._expand_item(item, path)
 
     def _on_selection_changed(self, event: dv.TreeListEvent) -> None:
+        if self._suppress_selection:
+            return
         item = event.GetItem()
         path = self.tree.GetItemData(item)
         if path is not None:
@@ -145,6 +203,18 @@ class ResourceTree(wx.Panel):
     def reveal(self, path: str) -> None:
         if self._session is None:
             return
+        item = self._locate_path(path)
+        if item is None:
+            return
+        self.tree.EnsureVisible(item)
+        self._suppress_selection = True
+        try:
+            self.tree.Select(item)
+        finally:
+            self._suppress_selection = False
+        self._on_select(path)
+
+    def _locate_path(self, path: str):
         tokens = _paths.tokenize(path)
         item = self.tree.GetRootItem()
         for i in range(len(tokens)):
@@ -154,13 +224,11 @@ class ResourceTree(wx.Panel):
                 self._expand_item(item, self.tree.GetItemData(item) or "")
                 child = self._find_child(item, prefix)
             if child is None:
-                return  # e.g. an index that no longer exists after an edit
+                return None  # e.g. an index that no longer exists after an edit
             item = child
             if i < len(tokens) - 1:
                 self.tree.Expand(item)
-        self.tree.EnsureVisible(item)
-        self.tree.Select(item)
-        self._on_select(path)
+        return item
 
     def _find_child(self, parent_item, path: str):
         child = self.tree.GetFirstChild(parent_item)
@@ -201,6 +269,29 @@ class ResourceTree(wx.Panel):
             self.search_status.SetLabel("no matches")
             return
         self._on_search_next(None)
+
+    def _refresh_search_results(self, current_match: Optional[str]) -> None:
+        """Recompute a live search without navigating away during refresh."""
+
+        if self._session is None:
+            return
+        query = self.search.GetValue()
+        if not query.strip():
+            self._reset_search()
+            return
+        ref_index = build_reference_index(self._session.working)
+        summaries = find_nodes(self._session.working, ref_index, query)
+        self._search_results = [summary.path for summary in summaries]
+        if not self._search_results:
+            self._search_cursor = -1
+            self.search_status.SetLabel("no matches")
+            return
+        if current_match in self._search_results:
+            self._search_cursor = self._search_results.index(current_match)
+        else:
+            self._search_cursor = min(max(self._search_cursor, 0), len(self._search_results) - 1)
+        path = self._search_results[self._search_cursor]
+        self.search_status.SetLabel(f"{self._search_cursor + 1} of {len(self._search_results)}: {path}")
 
     def _on_search_next(self, _event: Optional[wx.CommandEvent]) -> None:
         if not self._search_results:

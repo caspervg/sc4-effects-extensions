@@ -7,7 +7,7 @@ per the spec's naming -- import this module qualified
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..container.adapter import EffDirSource, ResourceHandle, WriteOptions
@@ -23,7 +23,7 @@ from ..wire import Diagnostic, Raw, WireString
 from . import nodes as _nodes
 from . import paths as _paths
 from .opaque_ranges import opaque_ranges as _opaque_ranges
-from .references import build_reference_index
+from .references import Reference, build_reference_index, references_to_name
 from .session import Change, ChangeSet, EditorSession, open_session
 
 RECORD_FACTORIES: Dict[str, Any] = {
@@ -40,6 +40,13 @@ RECORD_FACTORIES: Dict[str, Any] = {
     "SoundDescription": default_sound,
     "CameraDescription": default_camera,
 }
+
+
+class ReferenceIntegrityError(ValueError):
+    def __init__(self, path: str, references: List[Reference]):
+        self.path = path
+        self.references = references
+        super().__init__(f"cannot remove {path}; {len(references)} reference(s) would become dangling")
 
 
 @dataclass(frozen=True)
@@ -149,17 +156,64 @@ def remove_record(session: EditorSession, record_path: str) -> ChangeSet:
     parent, key = _paths.get_parent_and_key(session.working, record_path)
     if not isinstance(key, int):
         raise ValueError(f"remove_record path must end in an index, got {record_path!r}")
+    blockers = removal_references(session, record_path)
+    if blockers:
+        raise ReferenceIntegrityError(record_path, blockers)
     session.snapshot()
     removed = parent.items.pop(key)
-    change = session.record_change(record_path, before=removed, after=None, reason="user")
+    warnings: List[str] = []
+    tokens = _paths.tokenize(record_path)
+    if len(tokens) == 2 and tokens[0] == "effect_descriptions":
+        old_entries = session.working.effect_name_map.items
+        removed_aliases = [entry for entry in old_entries if entry.target.value == key]
+        adjusted_entries = []
+        shifted = 0
+        for entry in old_entries:
+            target = entry.target.value
+            if target == key:
+                continue
+            if target > key:
+                entry = replace(entry, target=entry.target.replace(target - 1))
+                shifted += 1
+            adjusted_entries.append(entry)
+        session.working.effect_name_map.items[:] = adjusted_entries
+        if removed_aliases:
+            warnings.append(f"removed {len(removed_aliases)} matching effect-name alias(es)")
+        if shifted:
+            warnings.append(f"shifted {shifted} effect-name target(s) after index {key}")
+    change = session.record_change(record_path, before=removed, after=None, reason="user", warnings=warnings)
     return ChangeSet(changes=[change], diagnostics=[])
+
+
+def removal_references(session: EditorSession, record_path: str) -> List[Reference]:
+    """Known references that prevent a record from being removed safely."""
+
+    tokens = _paths.tokenize(record_path)
+    if len(tokens) != 2 or not isinstance(tokens[1], int):
+        return []
+    collection, index = tokens
+    if collection == "effect_descriptions":
+        names = {
+            entry.name.decoded
+            for entry in session.working.effect_name_map.items
+            if entry.target.value == index and entry.name.decoded
+        }
+        references = [reference for name in names for reference in references_to_name(session.working, name)]
+    elif collection == "effect_name_map":
+        entries = session.working.effect_name_map.items
+        if index >= len(entries) or not entries[index].name.decoded:
+            return []
+        references = references_to_name(session.working, entries[index].name.decoded)
+    else:
+        return []
+    return list({reference.path: reference for reference in references}.values())
 
 
 def add_effect(session: EditorSession, name: str) -> ChangeSet:
     """Allocates an EffectDescription and its effect-name lookup entry
     together (effdir-editor-spec.md, "Add an effect description"). The
-    map target is left at 0 -- an explicit editable integer, per spec,
-    since target-allocation semantics are not independently confirmed."""
+    map target is the newly allocated description index, as established by
+    the vanilla file's complete 0..N-1 target permutation."""
 
     session.snapshot()
     description = default_effect_description()
@@ -170,15 +224,16 @@ def add_effect(session: EditorSession, name: str) -> ChangeSet:
     from ..model.common import StringU32Pair
     from ..wire import make_raw_u32
 
-    session.working.effect_name_map.items.append(StringU32Pair(name=WireString.from_text(name), target=make_raw_u32(0)))
-    map_index = len(session.working.effect_name_map.items) - 1
+    session.working.effect_name_map.items.append(
+        StringU32Pair(name=WireString.from_text(name), target=make_raw_u32(effect_index))
+    )
 
     change = session.record_change(
         f"effect_descriptions[{effect_index}]",
         before=None,
         after=description,
         reason="allocation",
-        warnings=[f"effect_name_map[{map_index}].target left at 0; set it explicitly"],
+        warnings=[],
     )
     return ChangeSet(changes=[change], diagnostics=[])
 
