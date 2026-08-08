@@ -10,6 +10,7 @@ from typing import Optional
 
 import wx
 import wx.aui
+import wx.dataview as dv
 
 from ..container.adapter import DEFAULT_EFFDIR_TGI, DbpfEffDirSource, LocalFileEffDirSource, ResourceHandle, WriteOptions
 from ..editor import api
@@ -95,7 +96,7 @@ class MainFrame(wx.Frame):
         self.status = self.CreateStatusBar(2)
         self.status.SetStatusWidths([-1, self.FromDIP(260)])
 
-        self.tree.tree.Bind(wx.EVT_CONTEXT_MENU, self._on_tree_context_menu)
+        self.tree.tree.Bind(dv.EVT_TREELIST_ITEM_CONTEXT_MENU, self._on_tree_context_menu)
 
         self._mgr.Update()
         self._update_enabled_state()
@@ -264,6 +265,7 @@ class MainFrame(wx.Frame):
         self.status.SetStatusText(f"Saved ({result.backup_path or 'no backup'})", 0)
         if result.warnings:
             wx.MessageBox("\n".join(result.warnings), "Saved with warnings", wx.OK | wx.ICON_WARNING)
+        self.tree.refresh()
         self._refresh_diagnostics()
         self._update_enabled_state()
         return True
@@ -357,12 +359,16 @@ class MainFrame(wx.Frame):
 
     # --- add/remove records ---------------------------------------------------
 
-    def _on_tree_context_menu(self, _evt) -> None:
+    def _on_tree_context_menu(self, evt) -> None:
         if self.session is None:
             return
-        item = self.tree.tree.GetSelection()
+        item = evt.GetItem()
         if not item.IsOk():
             return
+        # A right-click does not consistently update TreeListCtrl's current
+        # selection on every platform. Keep selection, field details, and the
+        # context-menu target in sync explicitly.
+        self.tree.tree.Select(item)
         path = self.tree.tree.GetItemData(item)
         if path is None:
             return

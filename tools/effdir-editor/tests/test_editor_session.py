@@ -61,6 +61,13 @@ def test_add_effect_allocates_its_actual_description_index():
     api.add_effect(session, "second")
 
     assert [entry.target.value for entry in session.working.effect_name_map.items] == [0, 1]
+    assert session.new_paths == {"effect_descriptions[0]", "effect_descriptions[1]"}
+
+    api.undo(session)
+    assert session.new_paths == {"effect_descriptions[0]"}
+
+    api.redo(session)
+    assert session.new_paths == {"effect_descriptions[0]", "effect_descriptions[1]"}
 
 
 def test_effect_removal_blocks_external_references_then_cascades_alias_indices():

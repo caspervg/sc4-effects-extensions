@@ -129,10 +129,13 @@ class ResourceTree(wx.Panel):
 
     def _append_children(self, parent_item, path: str) -> None:
         assert self._session is not None
+        new_paths = self._session.new_paths
         for summary in api.list_nodes(self._session, path or None):
             label = self._short_label(summary.path)
             if summary.display_name:
                 label = f'{self._named_item_label(summary.path)} "{summary.display_name}"'
+            if summary.path in new_paths:
+                label += " *"
             item = self.tree.AppendItem(parent_item, label)
             self.tree.SetItemText(item, 1, summary.record_type)
             self.tree.SetItemText(item, 2, summary.evidence)

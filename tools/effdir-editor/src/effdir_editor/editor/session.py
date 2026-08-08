@@ -55,6 +55,12 @@ class EditorSession:
     def dirty_paths(self) -> Set[str]:
         return {c.path for c in self.change_log}
 
+    @property
+    def new_paths(self) -> Set[str]:
+        """Paths allocated during the current, uncommitted edit session."""
+
+        return {c.path for c in self.change_log if c.reason == "allocation" and c.after is not None}
+
     def snapshot(self) -> None:
         self.undo_stack.append(
             SessionState(
