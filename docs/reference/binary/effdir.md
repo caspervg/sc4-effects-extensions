@@ -257,13 +257,18 @@ and its symmetric writer; it is not a Wiki “section 4” assertion.
 `cSC4DynamicParticleDescription` is present only for major version `4`:
 
 ```text
-bitset<7>@+0x08, string@+0x0c, f32@+0x10, f32@+0x14,
-f32@+0x18, f32@+0x1c, f32@+0x20, f32@+0x24,
-u32@+0x28, vector<u32>@+0x2c
+bitset<7>@+0x08, string@+0x0c,
+u32@+0x28, vector<u32>@+0x2c,
+f32@+0x10, f32@+0x14, f32@+0x18,
+f32@+0x1c, f32@+0x20, f32@+0x24
 ```
 
-The read operator is `0x004B8ADA`; the first bitset is serialized through
-the 7-bit bitset operator and therefore occupies one `u32` on the wire.
+The read operator is `0x004B8ADA` and the paired writer is `0x004B8A2E`.
+Both place the model key and model-key vector before the six floats; the
+non-monotonic member offsets above are therefore also the exact wire order.
+The first bitset is serialized through the 7-bit bitset operator and occupies
+one `u32` on the wire. The constructor at `0x004B89B2` initializes mass
+(`+0x10`) to `1.0`; the remaining scalar members start at zero.
 
 ## Effect descriptions
 
@@ -567,8 +572,24 @@ working object. The traced parser writes these members:
 | `+0x28` | one model resource key | `cDynamicParticleModelCommand::Parse`, `0x00789E54` |
 | `+0x2c` vector | multiple model resource keys | same |
 
-The top-level dynamic-particle command initializes the descriptor and resolves
-its name; the seven-bit flag word at `+0x08` still needs consumer tracing.
+`cDynamicParticleEffectCommand::RegisterCommands` at `0x007834EA` confirms
+that the only nested command families are `effectBase`, `model`, `mass`, and
+`friction`. Its top-level parser at `0x0078A162` constructs a fresh descriptor
+(thereby applying the `1.0` mass default), optionally inherits a named base
+descriptor, and resolves its name.
+
+The seven-bit word at `+0x08` is serialized and copied by descriptor
+assignment, but none of the four direct parser handlers assigns it. The
+runtime descriptor consumers `cSC4DynamicParticleEffect::SetDescription`
+(`0x004B91A8`) and `Start` (`0x004BA6B0`) use the base name, model keys, mass,
+and friction values without reading `+0x08`. Package evidence agrees: all
+three dynamic-particle records in the vanilla
+`EA5118B0-EA5118B1-00000001` resource have a zero flag word (`p_vehicle`,
+`p_train`, and `p_train_toxic`). Therefore bits 0-6 are best classified as
+serialized but unconsumed/reserved-looking in this build, not as named
+options. The editor preserves them and intentionally presents generic bit
+numbers. The floats at `+0x14` and `+0x24` have the same zero-in-vanilla and
+unconsumed status.
 
 ### Decal descriptor
 

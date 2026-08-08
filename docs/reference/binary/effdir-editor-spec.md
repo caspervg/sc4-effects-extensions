@@ -654,6 +654,11 @@ DynamicParticleDescriptor {
 }
 ```
 
+The declaration above groups fields semantically; it is not wire order. The
+Mac read/write pair (`0x004B8ADA` / `0x004B8A2E`) serializes dynamic particles
+as `flags`, `base_name`, `model_key`, `model_keys`, then the six floats from
+`mass` through `value_24`.
+
 ## Parsing contract
 
 Parsing is fail-closed and bounded:

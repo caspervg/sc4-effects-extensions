@@ -26,6 +26,13 @@ _MEMBER_ALIASES: Dict[Tuple[str, str], str] = {
 # command catalog does not yet have one binding per bit. Unknown bits still
 # deliberately fall back to ``bit N``.
 _KNOWN_LABELS: Dict[Tuple[str, str], Dict[int, str]] = {
+    # No parser or runtime consumer was found for these bits, and all three
+    # vanilla dynamic-particle descriptors store zero. Keep the uncertainty
+    # explicit: they remain editable/preserved instead of being declared
+    # definitively reserved.
+    ("DynamicParticleDescriptor", "flags"): {
+        bit: f"bit {bit} (unused?)" for bit in range(7)
+    },
     ("DecalDescriptor", "flags"): {
         1: "light",
         2: "water",
