@@ -1,0 +1,24 @@
+[project]
+name = "effdir-editor"
+version = "0.1.0"
+description = "Cross-platform wxPython editor for the SimCity 4 packed EFFDIR resource format"
+readme = "README.md"
+authors = [
+    { name = "Casper Van Gheluwe", email = "caspervg@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "wxpython>=4.3.1",
+]
+
+[project.scripts]
+effdir-editor = "effdir_editor:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]

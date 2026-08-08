@@ -13,7 +13,6 @@ Scope:
 Out of scope here:
 
 - the separate render-properties / rules DSL
-- binary offsets and field layouts
 - source mapping and reverse-engineering notebook details
 
 Status labels used in these docs:
@@ -43,6 +42,8 @@ Status labels used in these docs:
 - [sequence](./reference/top-level/sequence.md)
 - [Resource binding and effect IDs](./reference/top-level/resource-binding.md)
 - [Camera, priority, test spawns, and message triggers](./reference/top-level/misc-top-level.md)
+- [Packed EFFDIR wire format](./reference/binary/effdir.md)
+- [EFFDIR editor specification](./reference/binary/effdir-editor-spec.md)
 
 ## Nested effect commands
 

@@ -1,0 +1,106 @@
+version = 1
+revision = 2
+requires-python = ">=3.12"
+
+[[package]]
+name = "colorama"
+version = "0.4.6"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/d8/53/6f443c9a4a8358a93a6792e2acffb9d9d5cb0a5cfd8802644b7b1c9a02e4/colorama-0.4.6.tar.gz", hash = "sha256:08695f5cb7ed6e0531a20572697297273c47b8cae5a63ffc6d6ed5c201be6e44", size = 27697, upload-time = "2022-10-25T02:36:22.414Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d1/d6/3965ed04c63042e047cb6a3e6ed1a63a35087b6a609aa3a15ed8ac56c221/colorama-0.4.6-py2.py3-none-any.whl", hash = "sha256:4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6", size = 25335, upload-time = "2022-10-25T02:36:20.889Z" },
+]
+
+[[package]]
+name = "effdir-editor"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "wxpython" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "wxpython", specifier = ">=4.3.1" }]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=9.1.1" }]
+
+[[package]]
+name = "iniconfig"
+version = "2.3.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/72/34/14ca021ce8e5dfedc35312d08ba8bf51fdd999c576889fc2c24cb97f4f10/iniconfig-2.3.0.tar.gz", hash = "sha256:c76315c77db068650d49c5b56314774a7804df16fee4402c1f19d6d15d8c4730", size = 20503, upload-time = "2025-10-18T21:55:43.219Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/cb/b1/3846dd7f199d53cb17f49cba7e651e9ce294d8497c8c150530ed11865bb8/iniconfig-2.3.0-py3-none-any.whl", hash = "sha256:f631c04d2c48c52b84d0d0549c99ff3859c98df65b3101406327ecc7d53fbf12", size = 7484, upload-time = "2025-10-18T21:55:41.639Z" },
+]
+
+[[package]]
+name = "packaging"
+version = "26.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/7d/fa/3944b40b07da9ce895c0e6303a5ab7d53da063554f534556b134a54d6093/packaging-26.3.tar.gz", hash = "sha256:94edc256424af38762eb31306eed28beb9f0efc50a8837492c9d6fd6004aed79", size = 313412, upload-time = "2026-08-04T18:15:28.737Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/63/34/ba1c580383c9eada3711951fef0795c80b829a078d72188184bcab9dd527/packaging-26.3-py3-none-any.whl", hash = "sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c", size = 129956, upload-time = "2026-08-04T18:15:27.159Z" },
+]
+
+[[package]]
+name = "pluggy"
+version = "1.6.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/f9/e2/3e91f31a7d2b083fe6ef3fa267035b518369d9511ffab804f839851d2779/pluggy-1.6.0.tar.gz", hash = "sha256:7dcc130b76258d33b90f61b658791dede3486c3e6bfb003ee5c9bfb396dd22f3", size = 69412, upload-time = "2025-05-15T12:30:07.975Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/54/20/4d324d65cc6d9205fabedc306948156824eb9f0ee1633355a8f7ec5c66bf/pluggy-1.6.0-py3-none-any.whl", hash = "sha256:e920276dd6813095e9377c0bc5566d94c932c33b27a3e3945d8389c374dd4746", size = 20538, upload-time = "2025-05-15T12:30:06.134Z" },
+]
+
+[[package]]
+name = "pygments"
+version = "2.20.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/c3/b2/bc9c9196916376152d655522fdcebac55e66de6603a76a02bca1b6414f6c/pygments-2.20.0.tar.gz", hash = "sha256:6757cd03768053ff99f3039c1a36d6c0aa0b263438fcab17520b30a303a82b5f", size = 4955991, upload-time = "2026-03-29T13:29:33.898Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f4/7e/a72dd26f3b0f4f2bf1dd8923c85f7ceb43172af56d63c7383eb62b332364/pygments-2.20.0-py3-none-any.whl", hash = "sha256:81a9e26dd42fd28a23a2d169d86d7ac03b46e2f8b59ed4698fb4785f946d0176", size = 1231151, upload-time = "2026-03-29T13:29:30.038Z" },
+]
+
+[[package]]
+name = "pytest"
+version = "9.1.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "colorama", marker = "sys_platform == 'win32'" },
+    { name = "iniconfig" },
+    { name = "packaging" },
+    { name = "pluggy" },
+    { name = "pygments" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/e4/47/b9efed96c114afcfa3c9d3fe98a76a1d14c74a9e266d397cf6eb64be5e01/pytest-9.1.1.tar.gz", hash = "sha256:1088fbde8f2b49d95a549a195707afa7a76a3ce9bcadc26b6d71f0ffda5fe313", size = 1636369, upload-time = "2026-06-19T10:58:32.857Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/24/25/1de2678b631f5a49215c6c96fff41ba892b0a34df68d6d80292b1b48aa7f/pytest-9.1.1-py3-none-any.whl", hash = "sha256:37a86b45efb9a47a61a36449063e8e18d0cab3161329fc099eb21783169c4f0c", size = 386536, upload-time = "2026-06-19T10:58:31.347Z" },
+]
+
+[[package]]
+name = "wxpython"
+version = "4.3.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/3d/dd/026f6286f8beefcdd9551ad2e05b4e3edb45e638cdc067db211c53c950ce/wxpython-4.3.1.tar.gz", hash = "sha256:4e3a95b63175be8e10f0662de506a36d8cc6cb86ecc5b30ae880c8dafb34a0cd", size = 64071924, upload-time = "2026-07-30T01:11:13.852Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/61/37/7c3e41fea1b66f42a26f8558ffc5fb3f7e250a0d48fca311a360fbe7b6ee/wxpython-4.3.1-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:61aee1518a8aa5c5392696a869c91f2a82eb022f1f2e3bf099be4a251c16ba50", size = 20018963, upload-time = "2026-07-30T01:10:18.111Z" },
+    { url = "https://files.pythonhosted.org/packages/ad/77/1823238ee2f0eee6778ceac2b92c82aa09d14a1398a1fe73490cea924591/wxpython-4.3.1-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:a0fd78747c3583a726f496c13ab9caa225d3f59ce39c1b8b026a5151deaf5bf1", size = 18816842, upload-time = "2026-07-30T01:10:21.658Z" },
+    { url = "https://files.pythonhosted.org/packages/1d/ef/1d5d25c535ca79ed61719884c406b2296ec40a9af44dde68fb455ca38ff7/wxpython-4.3.1-cp312-cp312-win32.whl", hash = "sha256:b2a845542d54baada50216dc5dca3af02095d98338c9788cb4cd865adf3b05c8", size = 16276235, upload-time = "2026-07-30T01:10:24.963Z" },
+    { url = "https://files.pythonhosted.org/packages/8a/70/c03bdacc6496b52ea5cfcf1f0a0c3030d56b6ca72efcbd4dab63a41f0e03/wxpython-4.3.1-cp312-cp312-win_amd64.whl", hash = "sha256:d2829bdca91280d85e66ec87b0be9635da919960a1b383a9a3f6332bc286c2d4", size = 18526411, upload-time = "2026-07-30T01:10:29.146Z" },
+    { url = "https://files.pythonhosted.org/packages/30/c5/548195ef606bb906541a70f20b97fd09c8f485e7725bebe31c46c7d9a326/wxpython-4.3.1-cp312-cp312-win_arm64.whl", hash = "sha256:bfa93c1317d875bdc9ec19fbbfa960de405108d3acc342be38fe55a0c5d6857f", size = 16324618, upload-time = "2026-07-30T01:10:32.542Z" },
+    { url = "https://files.pythonhosted.org/packages/33/6a/8d748ca1aeeab640adb638d54a7cdd19c209efb9a491f0877671090de505/wxpython-4.3.1-cp313-cp313-macosx_10_13_x86_64.whl", hash = "sha256:c89a061fc9b440dfd5a9ed2f1c0c60c8537352aa01c31af34bfed1a3dd0416a6", size = 20021809, upload-time = "2026-07-30T01:10:36.124Z" },
+    { url = "https://files.pythonhosted.org/packages/fc/95/4d07bd77312a394b78b75cc135fb52836e042a2a8af98ec655b3fcf4ec72/wxpython-4.3.1-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:579606f621f7edd76c5d85a235c12d6900427f527e0a95b56d583a15cad33221", size = 18818768, upload-time = "2026-07-30T01:10:39.574Z" },
+    { url = "https://files.pythonhosted.org/packages/ae/fa/69e5c01e4edcd2a922c3df89b11e18a9e6c4b3bcc6c0ee2067d89f2b6d8e/wxpython-4.3.1-cp313-cp313-win32.whl", hash = "sha256:c9c2663faa22764ecaf509b71af92d2a57c1c46ef7e1ca3be56e11d00c2c71c9", size = 16281041, upload-time = "2026-07-30T01:10:43.87Z" },
+    { url = "https://files.pythonhosted.org/packages/5e/fb/a3a0b05d432023746bf7e8b88f8c573f4e9f0f63d2b41bbf9aaa7fb4686f/wxpython-4.3.1-cp313-cp313-win_amd64.whl", hash = "sha256:0ae85e266dbb99fe46bc26920aa87b22fa3f83dc51b321bcd9afa51fa68340e7", size = 18524971, upload-time = "2026-07-30T01:10:47.478Z" },
+    { url = "https://files.pythonhosted.org/packages/7b/b1/ea97f5e0c933a815fc373c987b198fdf070cf29ec3c9d76b879c6f4e9a48/wxpython-4.3.1-cp313-cp313-win_arm64.whl", hash = "sha256:160d89584b17edba581274773a2b0e4eb828333e264323a12dcf91d828d14d91", size = 16322700, upload-time = "2026-07-30T01:10:50.898Z" },
+    { url = "https://files.pythonhosted.org/packages/d2/6b/b526cadb25bcf95f29e899198b8fb5d443bdf7f34122298a0cdb2783ba5b/wxpython-4.3.1-cp314-cp314-macosx_10_15_x86_64.whl", hash = "sha256:a5e771bb8a6115ca3f52facb66e661c341591def4ae5bcc1616ce824323697cc", size = 20027593, upload-time = "2026-07-30T01:10:54.332Z" },
+    { url = "https://files.pythonhosted.org/packages/f1/cd/93e944a4c072325787cc226c8987c339db3e313fe684314305bfaff15070/wxpython-4.3.1-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:6e4ad9bae9758bde843d9d4d713421451b2d90858805611c8a5ad3844b8ca66f", size = 18827057, upload-time = "2026-07-30T01:10:57.836Z" },
+    { url = "https://files.pythonhosted.org/packages/d0/bc/76f8ed6d9b8484a32d60cfac804056f7b28c66d1c8c461e283d1d967d4de/wxpython-4.3.1-cp314-cp314-win32.whl", hash = "sha256:f2a0721f56ad45bfea1edae8cf9de662c4048647bbd25e55f8d73644d26aba72", size = 16662676, upload-time = "2026-07-30T01:11:01.344Z" },
+    { url = "https://files.pythonhosted.org/packages/16/73/ff21c019e8aaad5eb563859559ba2a4f6efd0581834703db993d64abea97/wxpython-4.3.1-cp314-cp314-win_amd64.whl", hash = "sha256:bbb4cefea441cba77f81b0ac2f7445f0ad01f18fee3b72a78ed48298b3f8f0ab", size = 18967348, upload-time = "2026-07-30T01:11:04.774Z" },
+    { url = "https://files.pythonhosted.org/packages/0a/10/97d4671cd565cf156dcb3223a45cad34236ed1825a2abf0c5c815ad2daec/wxpython-4.3.1-cp314-cp314-win_arm64.whl", hash = "sha256:d69d21344d92488465e32118363d2ef307aee54f9d33a0826180e6bee8fbfd91", size = 16622520, upload-time = "2026-07-30T01:11:08.148Z" },
+]
