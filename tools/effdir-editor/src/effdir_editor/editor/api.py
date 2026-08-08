@@ -8,7 +8,7 @@ per the spec's naming -- import this module qualified
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..container.adapter import EffDirSource, ResourceHandle, WriteOptions
 from ..model.components import default_attractor, default_brush, default_camera, default_scrubber, default_sequence, default_sound
@@ -22,6 +22,8 @@ from ..model.shake import default_shake
 from ..wire import Diagnostic, Raw, WireString
 from . import nodes as _nodes
 from . import paths as _paths
+from .opaque_ranges import opaque_ranges as _opaque_ranges
+from .references import build_reference_index
 from .session import Change, ChangeSet, EditorSession, open_session
 
 RECORD_FACTORIES: Dict[str, Any] = {
@@ -97,11 +99,16 @@ def inspect(session: EditorSession) -> ResourceSummary:
 def list_nodes(session: EditorSession, path: Optional[str]) -> List[_nodes.NodeSummary]:
     base = path or ""
     dirty = session.dirty_paths
-    return [_nodes.build_node(session.working, p, dirty_paths=dirty).summary for p in _nodes.child_paths(session.working, base)]
+    ref_index = build_reference_index(session.working)
+    return [
+        _nodes.build_node(session.working, p, dirty_paths=dirty, reference_index=ref_index).summary
+        for p in _nodes.child_paths(session.working, base)
+    ]
 
 
 def get_node(session: EditorSession, path: str) -> _nodes.Node:
-    return _nodes.build_node(session.working, path, dirty_paths=session.dirty_paths)
+    ref_index = build_reference_index(session.working)
+    return _nodes.build_node(session.working, path, dirty_paths=session.dirty_paths, reference_index=ref_index)
 
 
 def set_raw(session: EditorSession, path: str, new_value: Any) -> ChangeSet:
@@ -178,6 +185,13 @@ def add_effect(session: EditorSession, name: str) -> ChangeSet:
 
 def validate(session: EditorSession) -> List[Diagnostic]:
     return list(session.working.preservation.diagnostics)
+
+
+def opaque_ranges(session: EditorSession, encoded_length: int) -> List[Tuple[int, int]]:
+    """Byte ranges of the encoded resource not backed by any decoded
+    field -- see opaque_ranges.py for why this isn't a full coverage map."""
+
+    return _opaque_ranges(session.working, encoded_length)
 
 
 def preview_write(session: EditorSession) -> WritePreview:

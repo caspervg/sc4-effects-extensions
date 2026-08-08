@@ -1,19 +1,29 @@
 """Resource tree: structural navigation (records + collections) over an
 EditorSession, lazily populated. Leaf field editing happens in the record
 editor panel, not here -- see effdir-editor-spec.md's "Workspace layout".
+
+A search box above the tree filters by substring match against path,
+display name, and record type (editor/search.py), then reveals and
+selects matches on Enter -- the tree stays lazily populated (no need to
+force-expand the whole resource), so revealing a match expands only its
+ancestor chain.
 """
 
 from __future__ import annotations
 
-from typing import Callable, Optional
+from typing import Callable, List, Optional
 
 import wx
 import wx.dataview as dv
 
 from ..editor import api
+from ..editor import paths as _paths
+from ..editor.references import build_reference_index
+from ..editor.search import find_nodes
 from ..editor.session import EditorSession
 
 _EXPANDABLE_KINDS = {"record", "collection"}
+_SEARCH_DEBOUNCE_MS = 200
 
 
 class ResourceTree(wx.Panel):
@@ -21,21 +31,38 @@ class ResourceTree(wx.Panel):
         super().__init__(parent)
         self._on_select = on_select
         self._session: Optional[EditorSession] = None
+        self._search_results: List[str] = []
+        self._search_cursor = -1
+        self._search_timer: Optional[wx.CallLater] = None
+
+        self.search = wx.SearchCtrl(self, style=wx.TE_PROCESS_ENTER)
+        self.search.SetDescriptiveText("Filter (Enter for next match)")
+        self.search.ShowCancelButton(True)
+        self.search_status = wx.StaticText(self, label="")
+        self.search_status.SetFont(self.search_status.GetFont().Smaller())
 
         self.tree = dv.TreeListCtrl(self, style=dv.TL_SINGLE)
         self.tree.AppendColumn("Node", width=220)
         self.tree.AppendColumn("Type", width=160)
         self.tree.AppendColumn("Evidence", width=90)
+        self.tree.AppendColumn("Refs", width=50)
 
         sizer = wx.BoxSizer(wx.VERTICAL)
+        sizer.Add(self.search, 0, wx.EXPAND | wx.ALL, 4)
+        sizer.Add(self.search_status, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 6)
         sizer.Add(self.tree, 1, wx.EXPAND)
         self.SetSizer(sizer)
 
         self.tree.Bind(dv.EVT_TREELIST_ITEM_EXPANDING, self._on_expanding)
         self.tree.Bind(dv.EVT_TREELIST_SELECTION_CHANGED, self._on_selection_changed)
+        self.search.Bind(wx.EVT_TEXT, self._on_search_text)
+        self.search.Bind(wx.EVT_TEXT_ENTER, self._on_search_next)
+        self.search.Bind(wx.EVT_SEARCHCTRL_CANCEL_BTN, self._on_search_cancel)
+        self.search.Bind(wx.EVT_SEARCHCTRL_SEARCH_BTN, self._on_search_next)
 
     def load(self, session: EditorSession) -> None:
         self._session = session
+        self._reset_search()
         self.tree.DeleteAllItems()
         root = self.tree.GetRootItem()
         self._append_children(root, "")
@@ -47,9 +74,14 @@ class ResourceTree(wx.Panel):
     def _append_children(self, parent_item, path: str) -> None:
         assert self._session is not None
         for summary in api.list_nodes(self._session, path or None):
-            item = self.tree.AppendItem(parent_item, self._short_label(summary.path))
+            label = self._short_label(summary.path)
+            if summary.display_name:
+                label = f'{label} "{summary.display_name}"'
+            item = self.tree.AppendItem(parent_item, label)
             self.tree.SetItemText(item, 1, summary.record_type)
             self.tree.SetItemText(item, 2, summary.evidence)
+            if summary.reference_count:
+                self.tree.SetItemText(item, 3, str(summary.reference_count))
             self.tree.SetItemData(item, summary.path)
             kind = self._kind_of(summary.path)
             if kind in _EXPANDABLE_KINDS and self._has_children(summary.path):
@@ -65,7 +97,6 @@ class ResourceTree(wx.Panel):
 
     def _kind_of(self, path: str) -> str:
         from ..editor import nodes as _nodes
-        from ..editor import paths as _paths
 
         return _nodes.classify(_paths.get_path(self._session.working, path))
 
@@ -75,18 +106,92 @@ class ResourceTree(wx.Panel):
 
         return len(_nodes.child_paths(self._session.working, path)) > 0
 
+    def _expand_item(self, item, path: str) -> None:
+        first_child = self.tree.GetFirstChild(item)
+        if first_child.IsOk() and self.tree.GetItemData(first_child) is None:
+            self.tree.DeleteItem(first_child)
+            self._append_children(item, path)
+
     def _on_expanding(self, event: dv.TreeListEvent) -> None:
         item = event.GetItem()
         path = self.tree.GetItemData(item)
         if path is None:
             return
-        first_child = self.tree.GetFirstChild(item)
-        if first_child.IsOk() and self.tree.GetItemData(first_child) is None:
-            self.tree.DeleteItem(first_child)
-            self._append_children(item, path)
+        self._expand_item(item, path)
 
     def _on_selection_changed(self, event: dv.TreeListEvent) -> None:
         item = event.GetItem()
         path = self.tree.GetItemData(item)
         if path is not None:
             self._on_select(path)
+
+    # --- reveal a path found elsewhere (search, or a cross-reference jump) --
+
+    def reveal(self, path: str) -> None:
+        if self._session is None:
+            return
+        tokens = _paths.tokenize(path)
+        item = self.tree.GetRootItem()
+        for i in range(len(tokens)):
+            prefix = _paths.format_tokens(tokens[: i + 1])
+            child = self._find_child(item, prefix)
+            if child is None:
+                self._expand_item(item, self.tree.GetItemData(item) or "")
+                child = self._find_child(item, prefix)
+            if child is None:
+                return  # e.g. an index that no longer exists after an edit
+            item = child
+            if i < len(tokens) - 1:
+                self.tree.Expand(item)
+        self.tree.EnsureVisible(item)
+        self.tree.Select(item)
+        self._on_select(path)
+
+    def _find_child(self, parent_item, path: str):
+        child = self.tree.GetFirstChild(parent_item)
+        while child.IsOk():
+            if self.tree.GetItemData(child) == path:
+                return child
+            child = self.tree.GetNextSibling(child)
+        return None
+
+    # --- search -------------------------------------------------------------
+
+    def _reset_search(self) -> None:
+        self._search_results = []
+        self._search_cursor = -1
+        self.search_status.SetLabel("")
+
+    def _on_search_cancel(self, _event: wx.CommandEvent) -> None:
+        self.search.SetValue("")
+        self._reset_search()
+
+    def _on_search_text(self, _event: wx.CommandEvent) -> None:
+        if self._search_timer is not None:
+            self._search_timer.Stop()
+        self._search_timer = wx.CallLater(_SEARCH_DEBOUNCE_MS, self._run_search)
+
+    def _run_search(self) -> None:
+        if self._session is None:
+            return
+        query = self.search.GetValue()
+        if not query.strip():
+            self._reset_search()
+            return
+        ref_index = build_reference_index(self._session.working)
+        summaries = find_nodes(self._session.working, ref_index, query)
+        self._search_results = [s.path for s in summaries]
+        self._search_cursor = -1
+        if not self._search_results:
+            self.search_status.SetLabel("no matches")
+            return
+        self._on_search_next(None)
+
+    def _on_search_next(self, _event: Optional[wx.CommandEvent]) -> None:
+        if not self._search_results:
+            self._run_search()
+            return
+        self._search_cursor = (self._search_cursor + 1) % len(self._search_results)
+        path = self._search_results[self._search_cursor]
+        self.search_status.SetLabel(f"{self._search_cursor + 1} of {len(self._search_results)}: {path}")
+        self.reveal(path)

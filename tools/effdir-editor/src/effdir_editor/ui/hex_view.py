@@ -6,7 +6,7 @@ directly rather than relying on rich-text markup.
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import List, Optional, Tuple
 
 import wx
 
@@ -20,6 +20,7 @@ class HexView(wx.ScrolledWindow):
         self.SetBackgroundStyle(wx.BG_STYLE_PAINT)
         self._data: bytes = b""
         self._highlight: Optional[tuple[int, int]] = None
+        self._opaque_ranges: List[Tuple[int, int]] = []
         self._font = wx.Font(wx.FontInfo(10).Family(wx.FONTFAMILY_TELETYPE))
         self._row_height = self.FromDIP(18)
         dc = wx.ClientDC(self)
@@ -55,6 +56,16 @@ class HexView(wx.ScrolledWindow):
             self.Scroll(-1, row)
         self.Refresh()
 
+    def set_opaque_ranges(self, ranges: List[Tuple[int, int]]) -> None:
+        """Byte ranges not backed by any decoded field (editor/opaque_ranges.py),
+        shaded distinctly from the selected-field highlight."""
+
+        self._opaque_ranges = ranges
+        self.Refresh()
+
+    def _is_opaque(self, pos: int) -> bool:
+        return any(start <= pos < end for start, end in self._opaque_ranges)
+
     def _update_virtual_size(self) -> None:
         rows = max(1, (len(self._data) + BYTES_PER_ROW - 1) // BYTES_PER_ROW)
         width = (ADDR_COLUMN_CHARS + 2 + BYTES_PER_ROW * 3 + 2 + BYTES_PER_ROW) * self._char_w
@@ -71,6 +82,7 @@ class HexView(wx.ScrolledWindow):
         addr_colour = wx.Colour(140, 140, 150) if not is_dark else wx.Colour(130, 130, 140)
         text_colour = self.GetForegroundColour()
         highlight_bg = wx.Colour(255, 213, 79) if not is_dark else wx.Colour(120, 96, 15)
+        opaque_bg = wx.Colour(230, 120, 110) if not is_dark else wx.Colour(110, 55, 50)
 
         update_rect = self.GetUpdateRegion().GetBox()
         x0, y0 = self.CalcUnscrolledPosition(update_rect.GetLeft(), update_rect.GetTop())
@@ -99,6 +111,11 @@ class HexView(wx.ScrolledWindow):
                     dc.SetPen(wx.TRANSPARENT_PEN)
                     dc.DrawRectangle(cell_x, y, 2 * self._char_w + self.FromDIP(2), self._row_height)
                     dc.SetTextForeground(wx.BLACK)
+                elif self._is_opaque(pos):
+                    dc.SetBrush(wx.Brush(opaque_bg))
+                    dc.SetPen(wx.TRANSPARENT_PEN)
+                    dc.DrawRectangle(cell_x, y, 2 * self._char_w + 2, ROW_HEIGHT)
+                    dc.SetTextForeground(wx.WHITE)
                 else:
                     dc.SetTextForeground(text_colour)
                 dc.DrawText(f"{byte:02X}", cell_x, y)
@@ -112,6 +129,11 @@ class HexView(wx.ScrolledWindow):
                     dc.SetPen(wx.TRANSPARENT_PEN)
                     dc.DrawRectangle(cell_x, y, self._char_w, self._row_height)
                     dc.SetTextForeground(wx.BLACK)
+                elif self._is_opaque(pos):
+                    dc.SetBrush(wx.Brush(opaque_bg))
+                    dc.SetPen(wx.TRANSPARENT_PEN)
+                    dc.DrawRectangle(cell_x, y, self._char_w, ROW_HEIGHT)
+                    dc.SetTextForeground(wx.WHITE)
                 else:
                     dc.SetTextForeground(text_colour)
                 dc.DrawText(ch, cell_x, y)

@@ -5,16 +5,68 @@ binding catalog for labels/evidence. No wx dependency.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, fields, is_dataclass
-from typing import Any, List, Optional, Set
+from dataclasses import dataclass, field, fields, is_dataclass
+from typing import Any, List, Optional, Set, Tuple
 
 from ..bindings.catalog import CommandBinding, find_bindings
 from ..wire import Bounds2, Bounds3, Raw, Vec2, Vec3, WireString, WireVector
 from .paths import format_tokens, get_path, parent_path, tokenize
+from .references import Reference, ReferenceIndex
 
 VALUE_TYPES = (Vec2, Vec3, Bounds2, Bounds3)
 
 _HIDDEN_FIELDS = {"preservation"}
+
+# Record types that carry their own display-worthy name directly on a
+# field, keyed to which attribute holds it -- used to give the resource
+# tree a meaningful label instead of a bare "[i]" index.
+_SELF_NAME_FIELD = {
+    "StringU32Pair": "name",  # effect_name_map entries
+    "StringU32U32Record": "name",  # effect_key_map entries
+    "MessageTrigger": "effect_name",
+    "SequenceItem": "effect_name",  # empty for a "wait" item, a name for "play"
+}
+
+
+def _self_display_name(value: Any) -> Optional[str]:
+    if not is_dataclass(value):
+        return None
+    field_name = _SELF_NAME_FIELD.get(type(value).__name__)
+    if field_name is None:
+        return None
+    name_field = getattr(value, field_name, None)
+    return name_field.decoded if isinstance(name_field, WireString) and name_field.decoded else None
+
+
+def resolve_display_name(value: Any, path: str, reference_index: Optional[ReferenceIndex]) -> Optional[str]:
+    """Display-worthy name for `value` at `path`: either a name it carries
+    directly (`_SELF_NAME_FIELD`), or -- for an `EffectDescription`, whose
+    own `effect_name` reads back empty in real files -- the name resolved
+    through `effect_name_map` (see references.py's docstring). Takes an
+    already-known `value`/`path` pair rather than re-deriving them from
+    `root`, so callers walking many nodes (search.py) can call this without
+    repeating a root-to-node traversal per node."""
+
+    name = _self_display_name(value)
+    if name is not None:
+        return name
+    if reference_index and is_dataclass(value) and type(value).__name__ == "EffectDescription":
+        tokens = tokenize(path)
+        if len(tokens) >= 2 and tokens[-2] == "effect_descriptions" and isinstance(tokens[-1], int):
+            return reference_index.names.get(tokens[-1])
+    return None
+
+
+def resolve_record_type(kind: str, value: Any) -> str:
+    if kind == "scalar":
+        if isinstance(value, Raw):
+            return value.wire_type
+        return "f32" if isinstance(value, float) else "u32"
+    if kind == "string":
+        return "string"
+    if kind == "value" or is_dataclass(value) or isinstance(value, WireVector):
+        return type(value).__name__
+    return kind
 
 
 @dataclass(frozen=True)
@@ -33,6 +85,7 @@ class NodeSummary:
     evidence: str
     dirty: bool
     reference_count: int = 0
+    display_name: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -41,6 +94,7 @@ class Node:
     value: Any
     raw: Optional[RawValue]
     bindings: List[CommandBinding]
+    referenced_by: List[Reference] = field(default_factory=list)
 
 
 def classify(value: Any) -> str:
@@ -80,6 +134,21 @@ def child_paths(root: Any, path: str) -> List[str]:
     return []
 
 
+def iter_child_values(value: Any) -> List[Tuple[str, Any]]:
+    """Like `child_paths`, but works from an already-resolved `value` and
+    returns `(path_suffix, child_value)` pairs instead of full path
+    strings. For a full recursive walk (search.py), this avoids
+    `child_paths`/`build_node`'s per-call root-to-node re-traversal, which
+    turns O(n) into O(n^2) over a large resource."""
+
+    kind = classify(value)
+    if kind == "collection":
+        return [(f"[{i}]", item) for i, item in enumerate(value.items)]
+    if kind in ("record", "value"):
+        return [(f.name, getattr(value, f.name)) for f in fields(value) if f.name not in _HIDDEN_FIELDS]
+    return []
+
+
 def _parent_record_type(root: Any, path: str) -> Optional[str]:
     tokens = tokenize(path)
     if len(tokens) < 2:
@@ -88,11 +157,29 @@ def _parent_record_type(root: Any, path: str) -> Optional[str]:
     return type(parent).__name__ if is_dataclass(parent) else None
 
 
-def build_node(root: Any, path: str, *, dirty_paths: Set[str] = frozenset()) -> Node:
+def build_node(
+    root: Any,
+    path: str,
+    *,
+    dirty_paths: Set[str] = frozenset(),
+    reference_index: Optional[ReferenceIndex] = None,
+) -> Node:
     value = get_path(root, path) if path else root
     kind = classify(value)
     tokens = tokenize(path)
     attr_name = tokens[-1] if tokens else None
+
+    display_name = resolve_display_name(value, path, reference_index)
+    referenced_by: List[Reference] = []
+    if (
+        reference_index
+        and is_dataclass(value)
+        and type(value).__name__ == "EffectDescription"
+        and len(tokens) >= 2
+        and tokens[-2] == "effect_descriptions"
+        and isinstance(tokens[-1], int)
+    ):
+        referenced_by = reference_index.backlinks.get(tokens[-1], [])
 
     bindings: List[CommandBinding] = []
     if isinstance(attr_name, str):
@@ -120,19 +207,14 @@ def build_node(root: Any, path: str, *, dirty_paths: Set[str] = frozenset()) -> 
             raw_value = RawValue(path=path, wire_type="string", value=value, raw_bytes=b"")
             plain_value = value
 
-    if kind == "scalar":
-        record_type = raw_value.wire_type
-    elif kind == "string":
-        record_type = "string"
-    elif kind == "value" or is_dataclass(value) or isinstance(value, WireVector):
-        record_type = type(value).__name__
-    else:
-        record_type = kind
+    record_type = resolve_record_type(kind, value)
     summary = NodeSummary(
         path=path,
         record_type=record_type,
         label=bindings[0].command_path if bindings else None,
         evidence=bindings[0].evidence if bindings else "wire",
         dirty=path in dirty_paths,
+        reference_count=len(referenced_by),
+        display_name=display_name,
     )
-    return Node(summary=summary, value=plain_value, raw=raw_value, bindings=bindings)
+    return Node(summary=summary, value=plain_value, raw=raw_value, bindings=bindings, referenced_by=referenced_by)
