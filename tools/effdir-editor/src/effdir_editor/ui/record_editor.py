@@ -12,6 +12,7 @@ from typing import Callable, Optional
 import wx
 import wx.propgrid as wxpg
 
+from ..bindings.bitfields import bit_labels
 from ..editor import api
 from ..editor import nodes as _nodes
 from ..editor import paths as _paths
@@ -19,6 +20,21 @@ from ..editor.session import EditorSession
 from ..wire import Bounds2, Bounds3, Raw, Vec2, Vec3
 
 _KEY_LABEL_SUBSTRINGS = ("key", "_id")
+
+# Scalar fields confirmed (not guessed) to be two-state, rendered as a
+# checkbox instead of a numeric field. A starter set -- see catalog.py's
+# own "starter set, not the full table" policy -- grow it only as more
+# fields get the same level of confirmation, not from "value is 0 or 1 in
+# one sample file" alone (many value_XX placeholders happen to be 0/1 in a
+# given file without that being their full valid range).
+_BOOLEAN_FIELDS = {
+    # gates trailing_float_metadata's optional tail; model/resource.py's
+    # reader/writer branch on `!= 0`, so this is a code-level fact, not a
+    # guess.
+    ("TrailingFloatMetadata", "present"),
+    # effdir.md: "Attractor +0x10, name/group selector (-group sets 1)".
+    ("AttractorDescription", "selector"),
+}
 
 
 def _looks_like_key(label: str) -> bool:
@@ -32,11 +48,13 @@ def _looks_like_key(label: str) -> bool:
 
 
 class RecordEditor(wx.Panel):
-    def __init__(self, parent, on_change: Callable[[str], None]):
+    def __init__(self, parent, on_change: Callable[[str], None], on_navigate: Optional[Callable[[str], None]] = None):
         super().__init__(parent)
         self._session: Optional[EditorSession] = None
         self._record_path: Optional[str] = None
         self._on_change = on_change
+        self._on_navigate = on_navigate
+        self._references: list = []
 
         self.grid = wxpg.PropertyGridManager(
             self, style=wxpg.PG_SPLITTER_AUTO_CENTER | wxpg.PGMAN_DEFAULT_STYLE
@@ -45,13 +63,20 @@ class RecordEditor(wx.Panel):
         self.detail = wx.StaticText(self, label=" ")
         self.detail.SetFont(self.detail.GetFont().Smaller())
 
+        self.references_label = wx.StaticText(self, label="Referenced by:")
+        self.references_list = wx.ListBox(self, style=wx.LB_SINGLE)
+
         sizer = wx.BoxSizer(wx.VERTICAL)
         sizer.Add(self.grid, 1, wx.EXPAND)
         sizer.Add(self.detail, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 6)
+        sizer.Add(self.references_label, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, 6)
+        sizer.Add(self.references_list, 0, wx.EXPAND | wx.ALL, 6)
         self.SetSizer(sizer)
+        self._show_references(False)
 
         self.grid.Bind(wxpg.EVT_PG_CHANGED, self._on_prop_changed)
         self.grid.Bind(wxpg.EVT_PG_SELECTED, self._on_prop_selected)
+        self.references_list.Bind(wx.EVT_LISTBOX_DCLICK, self._on_reference_activated)
 
     def show_record(self, session: EditorSession, path: Optional[str]) -> None:
         self._session = session
@@ -61,7 +86,16 @@ class RecordEditor(wx.Panel):
         self.detail.SetLabel(" ")
         if not path or session is None:
             self.grid.RefreshGrid()
+            self._show_references(False)
             return
+
+        record_node = api.get_node(session, path)
+        self._references = record_node.referenced_by
+        if self._references:
+            self.references_list.Set([r.label for r in self._references])
+            self._show_references(True)
+        else:
+            self._show_references(False)
 
         for child_path in _nodes.child_paths(session.working, path):
             value_at_path = _paths.get_path(session.working, child_path)
@@ -83,14 +117,26 @@ class RecordEditor(wx.Panel):
             page.SetPropertyHelpString(prop, "; ".join(help_bits))
         self.grid.RefreshGrid()
 
+    def _parent_record_type(self, path: str) -> Optional[str]:
+        parent_path = _paths.parent_path(path)
+        parent_value = _paths.get_path(self._session.working, parent_path) if parent_path else self._session.working
+        return type(parent_value).__name__
+
     def _make_property(self, label: str, path: str, kind: str, node: _nodes.Node):
         value = node.value
         if kind == "scalar":
             wire_type = node.raw.wire_type
             if wire_type == "f32":
                 return wxpg.FloatProperty(label, path, float(value))
+            if wire_type.startswith("bitset<"):
+                return self._make_bitset_property(label, path, wire_type, int(value))
+            attr_name = _paths.tokenize(path)[-1]
+            if isinstance(attr_name, str) and (self._parent_record_type(path), attr_name) in _BOOLEAN_FIELDS:
+                prop = wxpg.BoolProperty(label, path, bool(value))
+                prop.SetAttribute(wxpg.PG_BOOL_USE_CHECKBOX, True)
+                return prop
             prop = wxpg.UIntProperty(label, path, int(value))
-            if wire_type.startswith("bitset") or _looks_like_key(label):
+            if _looks_like_key(label):
                 prop.SetAttribute(wxpg.PG_UINT_BASE, wxpg.PG_BASE_HEX)
                 prop.SetAttribute(wxpg.PG_UINT_PREFIX, wxpg.PG_PREFIX_0x)
             return prop
@@ -99,6 +145,14 @@ class RecordEditor(wx.Panel):
         if kind == "value":
             return wxpg.StringProperty(label, path, self._format_value(value))
         return None
+
+    def _make_bitset_property(self, label: str, path: str, wire_type: str, value: int) -> wxpg.FlagsProperty:
+        bit_count = int(wire_type[len("bitset<") : -1])
+        attr_name = _paths.tokenize(path)[-1]
+        record_type = self._parent_record_type(path)
+        labels = bit_labels(record_type, attr_name, bit_count) if isinstance(attr_name, str) else [f"bit {i}" for i in range(bit_count)]
+        values = [1 << i for i in range(bit_count)]
+        return wxpg.FlagsProperty(label, path, labels=labels, values=values, value=value)
 
     @staticmethod
     def _format_value(value) -> str:
@@ -130,6 +184,10 @@ class RecordEditor(wx.Panel):
 
     def _on_prop_changed(self, event: wxpg.PropertyGridEvent) -> None:
         prop = event.GetProperty()
+        if isinstance(prop.GetParent(), wxpg.FlagsProperty):
+            # A single bit checkbox changed; the model only knows the
+            # combined bitset value, held by the FlagsProperty itself.
+            prop = prop.GetParent()
         path = prop.GetName()
         current = _paths.get_path(self._session.working, path)
         kind = _nodes.classify(current)
@@ -160,6 +218,8 @@ class RecordEditor(wx.Panel):
         if prop is None or self._session is None:
             self.detail.SetLabel(" ")
             return
+        if isinstance(prop.GetParent(), wxpg.FlagsProperty):
+            prop = prop.GetParent()
         path = prop.GetName()
         node = api.get_node(self._session, path)
         bits = []
@@ -169,3 +229,14 @@ class RecordEditor(wx.Panel):
         if node.summary.label:
             bits.append(f"binding: {node.summary.label}")
         self.detail.SetLabel(f"{path}   —   " + "   ·   ".join(bits))
+
+    def _show_references(self, visible: bool) -> None:
+        self.references_label.Show(visible)
+        self.references_list.Show(visible)
+        self.Layout()
+
+    def _on_reference_activated(self, _event: wx.CommandEvent) -> None:
+        index = self.references_list.GetSelection()
+        if index == wx.NOT_FOUND or self._on_navigate is None:
+            return
+        self._on_navigate(self._references[index].path)

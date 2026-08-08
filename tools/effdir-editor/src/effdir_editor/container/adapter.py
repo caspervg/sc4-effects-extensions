@@ -10,7 +10,7 @@ import os
 import shutil
 import tempfile
 from dataclasses import dataclass
-from typing import Optional
+from typing import List, Optional
 
 from .dbpf import DbpfArchive, Tgi, replace_entry_and_save
 
@@ -52,6 +52,15 @@ class EffDirSource(abc.ABC):
 
 
 class DbpfEffDirSource(EffDirSource):
+    def list_effdir_tgis(self, package_path: str) -> List[str]:
+        """TGI strings of every EFFDIR-type resource in the package, so the
+        UI can offer a picker instead of always opening the default TGI --
+        a package can carry more than one EFFDIR resource."""
+
+        archive = DbpfArchive.open(package_path)
+        effdir_type = Tgi.parse(DEFAULT_EFFDIR_TGI).type_id
+        return sorted(str(e.tgi) for e in archive.list_entries() if e.tgi.type_id == effdir_type)
+
     def inspect(self, handle: ResourceHandle):
         archive = DbpfArchive.open(handle.package_path)
         tgi = Tgi.parse(handle.tgi or DEFAULT_EFFDIR_TGI)

@@ -48,7 +48,7 @@ class MainFrame(wx.Frame):
         self._mgr = wx.aui.AuiManager(self)
 
         self.tree = ResourceTree(self, on_select=self._on_tree_select)
-        self.record_editor = RecordEditor(self, on_change=self._on_field_changed)
+        self.record_editor = RecordEditor(self, on_change=self._on_field_changed, on_navigate=self._select_path)
         self.diagnostics = DiagnosticsPanel(self, on_activate_path=self._select_path)
         self.hex_view = HexView(self)
 
@@ -148,8 +148,29 @@ class MainFrame(wx.Frame):
             path = dlg.GetPath()
 
         is_dbpf = path.lower().endswith(".dat")
-        source = DbpfEffDirSource() if is_dbpf else LocalFileEffDirSource()
-        handle = ResourceHandle(package_path=path, tgi="")
+        tgi = ""
+        if is_dbpf:
+            source = DbpfEffDirSource()
+            try:
+                tgis = source.list_effdir_tgis(path)
+            except Exception as exc:
+                wx.MessageBox(f"Could not read package:\n{exc}", "Open failed", wx.OK | wx.ICON_ERROR)
+                return
+            if not tgis:
+                wx.MessageBox("No EFFDIR resources found in this package.", "Open failed", wx.OK | wx.ICON_ERROR)
+                return
+            if len(tgis) == 1:
+                tgi = tgis[0]
+            else:
+                with wx.SingleChoiceDialog(
+                    self, f"{len(tgis)} EFFDIR resources found in this package:", "Choose Resource", tgis
+                ) as choice_dlg:
+                    if choice_dlg.ShowModal() != wx.ID_OK:
+                        return
+                    tgi = choice_dlg.GetStringSelection()
+        else:
+            source = LocalFileEffDirSource()
+        handle = ResourceHandle(package_path=path, tgi=tgi)
         try:
             session = api.open(source, handle)
         except Exception as exc:  # surfaced to the user; the resource layer already fails closed
@@ -269,6 +290,7 @@ class MainFrame(wx.Frame):
         except Exception:
             data = self.session.original_bytes
         self.hex_view.set_data(data)
+        self.hex_view.set_opaque_ranges(api.opaque_ranges(self.session, len(data)))
 
     def _refresh_diagnostics(self) -> None:
         if self.session is None:
