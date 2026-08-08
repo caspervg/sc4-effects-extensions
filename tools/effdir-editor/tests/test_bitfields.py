@@ -1,4 +1,4 @@
-from effdir_editor.bindings.bitfields import bit_labels
+from effdir_editor.bindings.bitfields import bit_labels, named_bits
 
 
 def test_particle_bitsets_use_mac_parser_and_runtime_names():
@@ -50,6 +50,7 @@ def test_decal_bitset_uses_confirmed_flag_names():
         "ring",
         "static",
     ]
+    assert 0 not in named_bits("DecalDescriptor", "flags", 7)
 
 
 def test_scrubber_bitset_uses_confirmed_flag_names():

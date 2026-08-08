@@ -11,7 +11,7 @@ from typing import Optional
 import wx
 import wx.aui
 
-from ..container.adapter import DbpfEffDirSource, LocalFileEffDirSource, ResourceHandle, WriteOptions
+from ..container.adapter import DEFAULT_EFFDIR_TGI, DbpfEffDirSource, LocalFileEffDirSource, ResourceHandle, WriteOptions
 from ..editor import api
 from ..editor import nodes as _nodes
 from ..editor import paths as _paths
@@ -46,6 +46,7 @@ class MainFrame(wx.Frame):
         super().__init__(None, title=app_title())
         self.SetInitialSize(self.FromDIP((1280, 860)))
         self.session: Optional[EditorSession] = None
+        self._compression_item: Optional[wx.MenuItem] = None
 
         self._mgr = wx.aui.AuiManager(self)
 
@@ -111,6 +112,12 @@ class MainFrame(wx.Frame):
         file_menu.AppendSeparator()
         self._append(file_menu, wx.ID_SAVE, "&Save\tCtrl+S", self._on_save)
         self._append(file_menu, wx.ID_SAVEAS, "Save &As...\tCtrl+Shift+S", self._on_save_as)
+        self._compression_item = file_menu.AppendCheckItem(
+            wx.ID_ANY,
+            "Compress DBPF resource on save",
+            "Store the selected EFFDIR entry using QFS/RefPack compression",
+        )
+        self._compression_item.Enable(False)
         file_menu.AppendSeparator()
         self._append(file_menu, wx.ID_EXIT, "E&xit", lambda e: self.Close())
         menu_bar.Append(file_menu, "&File")
@@ -143,6 +150,9 @@ class MainFrame(wx.Frame):
 
     def _load_session(self, session: EditorSession) -> None:
         self.session = session
+        is_dbpf = isinstance(session.source, DbpfEffDirSource)
+        self._compression_item.Enable(True)
+        self._compression_item.Check(session.source.is_compressed(session.handle) if is_dbpf else False)
         self.tree.load(session)
         self.record_editor.show_record(session, None)
         self._refresh_hex()
@@ -219,27 +229,44 @@ class MainFrame(wx.Frame):
         if self.session is None:
             return
         with wx.FileDialog(
-            self, "Save EFFDIR resource", wildcard="Raw EFFDIR (*.effdir)|*.effdir|All files (*.*)|*.*",
+            self,
+            "Export EFFDIR resource",
+            wildcard="Raw EFFDIR (*.effdir)|*.effdir|Single-resource DBPF (*.dat)|*.dat|All files (*.*)|*.*",
             style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT,
         ) as dlg:
             if dlg.ShowModal() != wx.ID_OK:
                 return
             path = dlg.GetPath()
-        if not self.session.handle.package_path:
-            self.session.source = LocalFileEffDirSource()
-        self.session.handle = ResourceHandle(package_path=path, tgi=self.session.handle.tgi)
-        self._commit(path)
+            as_dbpf = dlg.GetFilterIndex() == 1 or path.lower().endswith(".dat")
 
-    def _commit(self, path: str) -> None:
+        previous_source = self.session.source
+        previous_handle = self.session.handle
+        tgi = previous_handle.tgi or DEFAULT_EFFDIR_TGI
+        self.session.source = DbpfEffDirSource() if as_dbpf else LocalFileEffDirSource()
+        self.session.handle = ResourceHandle(package_path="", tgi=tgi if as_dbpf else "")
+        if self._commit(path, create_package=as_dbpf):
+            self.session.handle = ResourceHandle(package_path=path, tgi=tgi if as_dbpf else "")
+        else:
+            self.session.source = previous_source
+            self.session.handle = previous_handle
+
+    def _commit(self, path: str, *, create_package: bool = False) -> bool:
         try:
-            result = api.commit(self.session, WriteOptions(output_path=path))
+            compress = self._compression_item.IsChecked() if isinstance(self.session.source, DbpfEffDirSource) else None
+            result = api.commit(
+                self.session,
+                WriteOptions(output_path=path, compress=compress, create_package=create_package),
+            )
         except Exception as exc:
             wx.MessageBox(f"Save failed:\n{exc}", "Save failed", wx.OK | wx.ICON_ERROR)
-            return
+            return False
         self.SetTitle(app_title(os.path.basename(path)))
         self.status.SetStatusText(f"Saved ({result.backup_path or 'no backup'})", 0)
+        if result.warnings:
+            wx.MessageBox("\n".join(result.warnings), "Saved with warnings", wx.OK | wx.ICON_WARNING)
         self._refresh_diagnostics()
         self._update_enabled_state()
+        return True
 
     def _on_close(self, event: wx.CloseEvent) -> None:
         if self.session is not None and self.session.dirty:
@@ -277,7 +304,9 @@ class MainFrame(wx.Frame):
             return
         self.session.selected_path = path
         kind = _nodes.classify(_paths.get_path(self.session.working, path))
-        if kind in ("record", "value", "collection"):
+        if kind == "collection":
+            self.record_editor.show_collection(self.session, path)
+        elif kind in ("record", "value"):
             self.record_editor.show_record(self.session, path)
         else:
             self.record_editor.show_record(self.session, _paths.parent_path(path))

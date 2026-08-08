@@ -11,7 +11,10 @@ compressed on disk (see container/qfs.py).
 
 from __future__ import annotations
 
+import os
 import struct
+import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -198,10 +201,31 @@ class DbpfArchive:
         )
 
 
-def replace_entry_and_save(path_in: str, path_out: str, tgi: Tgi, new_uncompressed_bytes: bytes) -> None:
+def _encode_payload(tgi: Tgi, data: bytes, should_compress: bool) -> tuple[bytes, bool, list[str]]:
+    if not should_compress:
+        return data, False, []
+    try:
+        encoded = qfs.compress(data)
+        if qfs.decompress(encoded) != data:
+            raise qfs.QfsError("encoder round-trip produced different bytes")
+    except Exception as exc:
+        warning = f"QFS compression safety check failed; stored {tgi} uncompressed: {exc}"
+        return data, False, [warning]
+    return struct.pack("<I", len(encoded)) + encoded, True, []
+
+
+def replace_entry_and_save(
+    path_in: str,
+    path_out: str,
+    tgi: Tgi,
+    new_uncompressed_bytes: bytes,
+    *,
+    compress: Optional[bool] = None,
+) -> list[str]:
     """Replace `tgi`'s payload with `new_uncompressed_bytes`, stored
-    uncompressed; drop it from the compression directory if listed; write a
-    complete valid DBPF file (fresh index, recomputed offsets/sizes) to
+    compressed according to *compress* (``None`` preserves the entry's
+    original compression state); write a complete valid DBPF file (fresh
+    index, recomputed offsets/sizes) to
     path_out. All other entries' bytes are preserved byte-for-byte, in
     their original relative order. Header dates/versions are preserved
     from the source; index-related header fields are recomputed."""
@@ -217,15 +241,27 @@ def replace_entry_and_save(path_in: str, path_out: str, tgi: Tgi, new_uncompress
             continue  # rebuilt below
         new_payloads[entry.tgi] = archive.read_raw(entry.tgi)
 
-    new_payloads[tgi] = bytes(new_uncompressed_bytes)
+    new_data = bytes(new_uncompressed_bytes)
+    should_compress = archive.is_compressed(tgi) if compress is None else compress
+    payload, compressed, warnings = _encode_payload(tgi, new_data, should_compress)
+    new_payloads[tgi] = payload
 
-    if archive._compression_dir:
-        remaining = {t: size for t, size in archive._compression_dir.items() if t != tgi}
-        if remaining:
-            dir_payload = bytearray()
-            for t, size in remaining.items():
-                dir_payload += struct.pack("<4I", t.type_id, t.group_id, t.instance_id, size)
-            new_payloads[dir_tgi] = bytes(dir_payload)
+    compression_entries = dict(archive._compression_dir)
+    if compressed:
+        compression_entries[tgi] = len(new_data)
+    else:
+        compression_entries.pop(tgi, None)
+    if compression_entries:
+        dir_payload = bytearray()
+        for compressed_tgi, size in compression_entries.items():
+            dir_payload += struct.pack(
+                "<4I",
+                compressed_tgi.type_id,
+                compressed_tgi.group_id,
+                compressed_tgi.instance_id,
+                size,
+            )
+        new_payloads[dir_tgi] = bytes(dir_payload)
 
     # Preserve original entry order (by original file offset) for entries
     # that still exist; the replaced/new tgi keeps its original position if
@@ -237,8 +273,56 @@ def replace_entry_and_save(path_in: str, path_out: str, tgi: Tgi, new_uncompress
             ordered_tgis.append(entry.tgi)
     if tgi not in ordered_tgis:
         ordered_tgis.append(tgi)
+    if dir_tgi in new_payloads and dir_tgi not in ordered_tgis:
+        ordered_tgis.append(dir_tgi)
 
-    header = archive.header
+    _write_archive(path_out, archive.header, ordered_tgis, new_payloads)
+    return warnings
+
+
+def create_archive_and_save(
+    path_out: str,
+    tgi: Tgi,
+    uncompressed_bytes: bytes,
+    *,
+    compress: bool = False,
+) -> list[str]:
+    data = bytes(uncompressed_bytes)
+    payload, compressed, warnings = _encode_payload(tgi, data, compress)
+    payloads = {tgi: payload}
+    ordered_tgis = [tgi]
+    if compressed:
+        dir_tgi = Tgi(*COMPRESSION_DIR_TGI)
+        payloads[dir_tgi] = struct.pack("<4I", tgi.type_id, tgi.group_id, tgi.instance_id, len(data))
+        ordered_tgis.append(dir_tgi)
+
+    timestamp = int(time.time())
+    header = DbpfHeader(
+        major_version=1,
+        minor_version=0,
+        user_major_version=0,
+        user_minor_version=0,
+        flags=0,
+        date_created=timestamp,
+        date_modified=timestamp,
+        index_major_version=7,
+        index_entry_count=0,
+        index_offset=0,
+        index_size=0,
+        hole_entry_count=0,
+        hole_offset=0,
+        hole_size=0,
+    )
+    _write_archive(path_out, header, ordered_tgis, payloads)
+    return warnings
+
+
+def _write_archive(
+    path_out: str,
+    header: DbpfHeader,
+    ordered_tgis: list[Tgi],
+    payloads: dict[Tgi, bytes],
+) -> None:
     out = bytearray()
     out += MAGIC
     out += struct.pack(
@@ -262,7 +346,7 @@ def replace_entry_and_save(path_in: str, path_out: str, tgi: Tgi, new_uncompress
 
     new_entries: list[IndexEntry] = []
     for t in ordered_tgis:
-        payload = new_payloads[t]
+        payload = payloads[t]
         offset = len(out)
         out += payload
         new_entries.append(IndexEntry(tgi=t, offset=offset, size=len(payload)))
@@ -276,4 +360,14 @@ def replace_entry_and_save(path_in: str, path_out: str, tgi: Tgi, new_uncompress
     struct.pack_into("<I", out, 40, index_offset)
     struct.pack_into("<I", out, 44, index_size)
 
-    Path(path_out).write_bytes(bytes(out))
+    output_path = Path(path_out)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary_path = tempfile.mkstemp(dir=str(output_path.parent), prefix=f".{output_path.name}.")
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(out)
+        os.replace(temporary_path, output_path)
+    except BaseException:
+        if os.path.exists(temporary_path):
+            os.remove(temporary_path)
+        raise

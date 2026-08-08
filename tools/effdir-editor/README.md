@@ -50,13 +50,10 @@ between monitors with different scale factors.
   component records, and effect descriptions (with their name-map entry).
 - Raw field editing everywhere; command-binding labels/evidence shown
   where the catalog has an entry.
+- Binding-driven `set_command` transactions and per-bit flag editors.
+- Optional QFS compression on DBPF writes, preserving the original state by default.
 - Unsupported major versions or malformed input fall back to a
   raw-preserved, read-only resource rather than guessing a layout.
-
-Not yet implemented: `set_command` (binding-driven multi-member/bit
-writes — raw editing covers this for now), QFS *compression* on write
-(saved entries are stored uncompressed in the DBPF), and per-bit
-flag editors.
 
 ## Tests
 

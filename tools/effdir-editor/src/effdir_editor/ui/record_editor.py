@@ -13,10 +13,11 @@ from typing import Callable, Optional
 import wx
 import wx.propgrid as wxpg
 
-from ..bindings.bitfields import bit_labels
+from ..bindings.bitfields import named_bits
 from ..editor import api
 from ..editor import nodes as _nodes
 from ..editor import paths as _paths
+from ..editor.references import ReferenceIndex, build_reference_index
 from ..editor.session import EditorSession
 from ..wire import Bounds2, Bounds3, Raw, Vec2, Vec3, WireString, WireVector
 
@@ -35,6 +36,8 @@ _FIELD_LABELS = {
     ("EventRecord", "name"): "definition_name",
     ("EventRecord", "time"): "epicenter_radius (flash only)",
     ("EventRecord", "value"): "resolved_description_index",
+    ("AttractorDescription", "name"): "Lua reference",
+    ("AttractorDescription", "selector"): "Type",
 }
 
 # Scalar fields confirmed (not guessed) to be two-state, rendered as a
@@ -48,8 +51,13 @@ _BOOLEAN_FIELDS = {
     # reader/writer branch on `!= 0`, so this is a code-level fact, not a
     # guess.
     ("TrailingFloatMetadata", "present"),
-    # effdir.md: "Attractor +0x10, name/group selector (-group sets 1)".
-    ("AttractorDescription", "selector"),
+}
+
+_ENUM_FIELDS = {
+    ("AttractorDescription", "selector"): (
+        ["Attractor / generator", "Occupant group"],
+        [0, 1],
+    ),
 }
 
 _HEX_FIELDS = {
@@ -99,6 +107,7 @@ class RecordEditor(wx.Panel):
         self._on_change = on_change
         self._on_navigate = on_navigate
         self._references: list = []
+        self._reference_index: Optional[ReferenceIndex] = None
         self._bit_parent_properties: dict[str, wxpg.PGProperty] = {}
         self._color_preview_properties: dict[str, wxpg.PGProperty] = {}
         self._ui_property_data: dict[str, tuple] = {}
@@ -134,6 +143,10 @@ class RecordEditor(wx.Panel):
         self.references_list.Bind(wx.EVT_LISTBOX_DCLICK, self._on_reference_activated)
 
     def show_record(self, session: EditorSession, path: Optional[str]) -> None:
+        if path and isinstance(_paths.get_path(session.working, path), WireVector):
+            self.show_collection(session, path)
+            return
+
         self._session = session
         self._record_path = path
         page = self.grid.GetPage(0)
@@ -147,7 +160,8 @@ class RecordEditor(wx.Panel):
             self._show_references(False)
             return
 
-        record_node = api.get_node(session, path)
+        self._reference_index = build_reference_index(session.working)
+        record_node = api.get_node(session, path, reference_index=self._reference_index)
         self._references = record_node.referenced_by
         if self._references:
             self.references_list.Set([r.label for r in self._references])
@@ -159,7 +173,7 @@ class RecordEditor(wx.Panel):
         for child_path in _nodes.child_paths(session.working, path):
             value_at_path = _paths.get_path(session.working, child_path)
             kind = _nodes.classify(value_at_path)
-            node = api.get_node(session, child_path)
+            node = api.get_node(session, child_path, reference_index=self._reference_index)
             # For a collection's own items, child_path is "path[i]" (no dot
             # separator) -- strip the shared prefix so rows read "[0]",
             # "[1]", ... instead of repeating the collection's own name.
@@ -201,13 +215,38 @@ class RecordEditor(wx.Panel):
         self._refresh_color_previews()
         self.grid.RefreshGrid()
 
+    def show_collection(self, session: EditorSession, path: str) -> None:
+        self._session = session
+        self._record_path = path
+        self._reference_index = None
+        self._references = []
+        page = self.grid.GetPage(0)
+        page.Clear()
+        self._bit_parent_properties.clear()
+        self._color_preview_properties.clear()
+        self._ui_property_data.clear()
+        self.references_list.Clear()
+        self._show_references(False)
+
+        collection = _paths.get_path(session.working, path)
+        count = len(collection.items) if isinstance(collection, WireVector) else 0
+        prop = wxpg.StringProperty("Items", path, f"{count} items")
+        property_data = ("path", path)
+        prop.SetClientData(property_data)
+        self._ui_property_data[path] = property_data
+        prop.ChangeFlag(_PG_READ_ONLY, True)
+        page.Append(prop)
+        page.SetPropertyHelpString(prop, "Select an individual entry in the tree to inspect or edit it")
+        self.detail.SetLabel(f"{path}   —   collection with {count} items")
+        self.grid.RefreshGrid()
+
     def _add_record_children(self, page, parent, path: str) -> None:
         """Recursively expose a dataclass record beneath a property row."""
 
         for child_path in _nodes.child_paths(self._session.working, path):
             value = _paths.get_path(self._session.working, child_path)
             kind = _nodes.classify(value)
-            node = api.get_node(self._session, child_path)
+            node = api.get_node(self._session, child_path, reference_index=self._reference_index)
             label = child_path.rsplit(".", 1)[-1]
             label = _FIELD_LABELS.get((self._parent_record_type(child_path), label), label)
 
@@ -252,6 +291,11 @@ class RecordEditor(wx.Panel):
             if wire_type.startswith("bitset<"):
                 return self._make_bitset_property(label, property_name, wire_type, int(value))
             attr_name = _paths.tokenize(path)[-1]
+            record_type = self._parent_record_type(path)
+            enum = _ENUM_FIELDS.get((record_type, attr_name)) if isinstance(attr_name, str) else None
+            if enum is not None:
+                choices, values = enum
+                return wxpg.EnumProperty(label, property_name, choices, values, int(value))
             if isinstance(attr_name, str) and (self._parent_record_type(path), attr_name) in _BOOLEAN_FIELDS:
                 prop = wxpg.BoolProperty(label, property_name, bool(value))
                 prop.SetAttribute(wxpg.PG_BOOL_USE_CHECKBOX, True)
@@ -298,8 +342,8 @@ class RecordEditor(wx.Panel):
         bit_count = int(wire_type[len("bitset<") : -1])
         attr_name = _paths.tokenize(path)[-1]
         record_type = self._parent_record_type(path)
-        labels = bit_labels(record_type, attr_name, bit_count) if isinstance(attr_name, str) else [f"bit {i}" for i in range(bit_count)]
-        for bit, label in enumerate(labels):
+        labels = named_bits(record_type, attr_name, bit_count) if isinstance(attr_name, str) else {}
+        for bit, label in labels.items():
             bit_name = f"{path}.__bit_{bit}"
             checkbox = wxpg.BoolProperty(label, bit_name, bool(value & (1 << bit)))
             checkbox.SetAttribute(wxpg.PG_BOOL_USE_CHECKBOX, True)
@@ -307,6 +351,14 @@ class RecordEditor(wx.Panel):
             checkbox.SetClientData(property_data)
             self._ui_property_data[bit_name] = property_data
             page.AppendIn(parent, checkbox)
+        unnamed_mask = value & ~sum(1 << bit for bit in labels)
+        unnamed_name = f"{path}.__unnamed_bits"
+        unnamed = wxpg.StringProperty("unnamed bits", unnamed_name, self._format_hex(unnamed_mask))
+        unnamed.ChangeFlag(_PG_READ_ONLY, True)
+        property_data = ("path", path)
+        unnamed.SetClientData(property_data)
+        self._ui_property_data[unnamed_name] = property_data
+        page.AppendIn(parent, unnamed)
 
     def _make_vector_property(
         self,
@@ -338,7 +390,7 @@ class RecordEditor(wx.Panel):
         for index, item in enumerate(vector.items):
             child_path = f"{path}[{index}]"
             property_name = self._vector_property_name(path, index)
-            child_node = api.get_node(self._session, child_path)
+            child_node = api.get_node(self._session, child_path, reference_index=self._reference_index)
             child_kind = _nodes.classify(item)
             child = self._make_property(
                 f"[{index}]",

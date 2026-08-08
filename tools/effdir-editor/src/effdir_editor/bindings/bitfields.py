@@ -139,6 +139,11 @@ _KNOWN_LABELS: Dict[Tuple[str, str], Dict[int, str]] = {
 
 
 def bit_labels(record_type: str, attr_name: str, bit_count: int) -> List[str]:
+    named = named_bits(record_type, attr_name, bit_count)
+    return [named.get(i, f"bit {i}") for i in range(bit_count)]
+
+
+def named_bits(record_type: str, attr_name: str, bit_count: int) -> Dict[int, str]:
     catalog_member = _MEMBER_ALIASES.get((record_type, attr_name), attr_name)
     by_bit: Dict[int, List[str]] = {}
     for binding in CATALOG:
@@ -148,7 +153,8 @@ def bit_labels(record_type: str, attr_name: str, bit_count: int) -> List[str]:
             if bit_ref.member_path == catalog_member:
                 by_bit.setdefault(bit_ref.bit, []).append(binding.command_path)
     known = _KNOWN_LABELS.get((record_type, attr_name), {})
-    return [
-        known[i] if i in known else ("/".join(by_bit[i]) if i in by_bit else f"bit {i}")
-        for i in range(bit_count)
-    ]
+    return {
+        bit: known[bit] if bit in known else "/".join(by_bit[bit])
+        for bit in range(bit_count)
+        if bit in known or bit in by_bit
+    }

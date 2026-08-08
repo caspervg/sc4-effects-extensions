@@ -12,7 +12,7 @@ import tempfile
 from dataclasses import dataclass
 from typing import List, Optional
 
-from .dbpf import DbpfArchive, Tgi, replace_entry_and_save
+from .dbpf import DbpfArchive, Tgi, create_archive_and_save, replace_entry_and_save
 
 DEFAULT_EFFDIR_TGI = "EA5118B0-EA5118B1-00000001"
 
@@ -26,11 +26,16 @@ class ResourceHandle:
 @dataclass(frozen=True)
 class WriteOptions:
     output_path: Optional[str] = None
+    # None preserves the DBPF entry's original state; True/False explicitly
+    # enable or disable QFS compression. Raw-file sources ignore this option.
+    compress: Optional[bool] = None
+    create_package: bool = False
 
 
 @dataclass(frozen=True)
 class WriteResult:
     path: str
+    warnings: tuple[str, ...] = ()
 
 
 class EffDirSource(abc.ABC):
@@ -66,6 +71,10 @@ class DbpfEffDirSource(EffDirSource):
         tgi = Tgi.parse(handle.tgi or DEFAULT_EFFDIR_TGI)
         return archive.find(tgi)
 
+    def is_compressed(self, handle: ResourceHandle) -> bool:
+        archive = DbpfArchive.open(handle.package_path)
+        return archive.is_compressed(Tgi.parse(handle.tgi or DEFAULT_EFFDIR_TGI))
+
     def read(self, handle: ResourceHandle) -> bytes:
         archive = DbpfArchive.open(handle.package_path)
         tgi = Tgi.parse(handle.tgi or DEFAULT_EFFDIR_TGI)
@@ -74,8 +83,17 @@ class DbpfEffDirSource(EffDirSource):
     def write(self, handle: ResourceHandle, data: bytes, write_options: WriteOptions) -> WriteResult:
         tgi = Tgi.parse(handle.tgi or DEFAULT_EFFDIR_TGI)
         output_path = write_options.output_path or handle.package_path
-        replace_entry_and_save(handle.package_path, output_path, tgi, data)
-        return WriteResult(path=output_path)
+        if write_options.create_package:
+            warnings = create_archive_and_save(output_path, tgi, data, compress=bool(write_options.compress))
+        else:
+            warnings = replace_entry_and_save(
+                handle.package_path,
+                output_path,
+                tgi,
+                data,
+                compress=write_options.compress,
+            )
+        return WriteResult(path=output_path, warnings=tuple(warnings))
 
     def backup(self, handle: ResourceHandle) -> Optional[str]:
         if not os.path.exists(handle.package_path):
