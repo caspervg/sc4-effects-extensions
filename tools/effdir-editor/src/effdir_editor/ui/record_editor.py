@@ -100,6 +100,7 @@ class RecordEditor(wx.Panel):
         self._on_navigate = on_navigate
         self._references: list = []
         self._bit_parent_properties: dict[str, wxpg.PGProperty] = {}
+        self._color_preview_properties: dict[str, wxpg.PGProperty] = {}
         self._ui_property_data: dict[str, tuple] = {}
 
         self.grid = wxpg.PropertyGridManager(
@@ -129,7 +130,7 @@ class RecordEditor(wx.Panel):
 
         self.grid.Bind(wxpg.EVT_PG_CHANGED, self._on_prop_changed)
         self.grid.Bind(wxpg.EVT_PG_SELECTED, self._on_prop_selected)
-        self.grid.Bind(wxpg.EVT_PG_DOUBLE_CLICK, self._on_prop_double_click)
+        self.grid.GetGrid().Bind(wx.EVT_LEFT_DCLICK, self._on_grid_double_click)
         self.references_list.Bind(wx.EVT_LISTBOX_DCLICK, self._on_reference_activated)
 
     def show_record(self, session: EditorSession, path: Optional[str]) -> None:
@@ -138,6 +139,7 @@ class RecordEditor(wx.Panel):
         page = self.grid.GetPage(0)
         page.Clear()
         self._bit_parent_properties.clear()
+        self._color_preview_properties.clear()
         self._ui_property_data.clear()
         self.detail.SetLabel(" ")
         if not path or session is None:
@@ -193,6 +195,10 @@ class RecordEditor(wx.Panel):
             # inherit the exact same tint as their parent block.
             self.grid.SetPropertyBackgroundColour(prop, self._property_group_colour(group_index))
             group_index += 1
+        # SetPropertyBackgroundColour recurses by default, so the zebra pass
+        # above overwrites custom descendant cell backgrounds. Apply swatches
+        # last, after all top-level block colours are final.
+        self._refresh_color_previews()
         self.grid.RefreshGrid()
 
     def _add_record_children(self, page, parent, path: str) -> None:
@@ -351,6 +357,7 @@ class RecordEditor(wx.Panel):
                 child.SetAttribute(wxpg.PG_UINT_PREFIX, wxpg.PG_PREFIX_0x)
             page.AppendIn(prop, child)
             if self._vector_is_color(path) and isinstance(item, Vec3):
+                self._color_preview_properties[child_path] = child
                 self._set_color_preview_cell(child, item)
             if child_kind == "record" or child_kind == "collection":
                 child.ChangeFlag(_PG_READ_ONLY, True)
@@ -429,6 +436,12 @@ class RecordEditor(wx.Panel):
             fgCol=wx.BLACK if luminance >= 140 else wx.WHITE,
             bgCol=colour,
         )
+
+    def _refresh_color_previews(self) -> None:
+        for path, prop in self._color_preview_properties.items():
+            value = _paths.get_path(self._session.working, path)
+            if isinstance(value, Vec3):
+                self._set_color_preview_cell(prop, value)
 
     @classmethod
     def _format_vector(cls, vector: WireVector) -> str:
@@ -550,8 +563,17 @@ class RecordEditor(wx.Panel):
                     continue
                 self._set_color_preview_cell(child, item)
 
-    def _on_prop_double_click(self, event: wxpg.PropertyGridEvent) -> None:
-        prop = event.GetProperty()
+    def _on_grid_double_click(self, event: wx.MouseEvent) -> None:
+        """Open a colour picker for a double-click in a preview cell.
+
+        wx's semantic property-double-click event is geared towards the
+        editable value column and does not reliably identify custom columns.
+        A mouse hit test on the underlying PropertyGrid preserves the actual
+        clicked column.
+        """
+
+        hit = self.grid.GetGrid().HitTest(event.GetPosition())
+        prop = hit.GetProperty()
         if prop is None or self._session is None:
             event.Skip()
             return
@@ -561,11 +583,7 @@ class RecordEditor(wx.Panel):
         else:
             path = client_data[1]
         current = _paths.get_path(self._session.working, path)
-        if _nodes.classify(current) == "record":
-            # Let wx handle the native double-click expand/collapse action.
-            event.Skip()
-            return
-        if event.GetColumn() != 2:
+        if hit.GetColumn() != 2:
             event.Skip()
             return
         vector_path = _paths.parent_path(path)
@@ -580,12 +598,19 @@ class RecordEditor(wx.Panel):
             if dialog.ShowModal() != wx.ID_OK:
                 return
             colour = dialog.GetColourData().GetColour()
+            # Copy primitives while the native dialog and its ColourData are
+            # still alive. Do not retain a wx wrapper owned by the dialog.
+            red, green, blue = colour.Red(), colour.Green(), colour.Blue()
 
-        new_value = Vec3(colour.Red() / 255.0, colour.Green() / 255.0, colour.Blue() / 255.0)
+        new_value = Vec3(red / 255.0, green / 255.0, blue / 255.0)
         api.set_raw(self._session, path, new_value)
         prop.SetValue(self._format_value(new_value))
+        self._set_color_preview_cell(prop, new_value)
         self._refresh_vector_summary(path)
-        self._on_change(path)
+        # MainFrame's callback refreshes the resource tree and may rebuild the
+        # property page. Defer that work until wx has finished dispatching the
+        # native double-click event that owns ``prop``.
+        wx.CallAfter(self._on_change, path)
 
     def _on_prop_selected(self, event: wxpg.PropertyGridEvent) -> None:
         prop = event.GetProperty()
