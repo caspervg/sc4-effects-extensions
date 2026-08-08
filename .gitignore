@@ -16,4 +16,4 @@
 *.lib
 *.ipch
 *.log
-
+*.pyc

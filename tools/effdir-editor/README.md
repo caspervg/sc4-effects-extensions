@@ -36,6 +36,11 @@ uv run effdir-editor
 uv run python -m effdir_editor
 ```
 
+On Windows, the editor opts into per-monitor DPI awareness and scales its
+custom-painted geometry with wxPython DIP units, so it remains sharp and
+usable when Windows display scaling is above 100% or when the window moves
+between monitors with different scale factors.
+
 ## Current scope (first version)
 
 - Full lossless read/write round trip for major 3 and 4 resources,

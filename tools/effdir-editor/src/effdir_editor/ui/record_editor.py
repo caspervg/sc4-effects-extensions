@@ -47,7 +47,7 @@ class RecordEditor(wx.Panel):
 
         sizer = wx.BoxSizer(wx.VERTICAL)
         sizer.Add(self.grid, 1, wx.EXPAND)
-        sizer.Add(self.detail, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 6)
+        sizer.Add(self.detail, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, self.FromDIP(6))
         self.SetSizer(sizer)
 
         self.grid.Bind(wxpg.EVT_PG_CHANGED, self._on_prop_changed)

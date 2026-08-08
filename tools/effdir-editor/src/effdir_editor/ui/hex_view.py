@@ -11,7 +11,6 @@ from typing import Optional
 import wx
 
 BYTES_PER_ROW = 16
-ROW_HEIGHT = 18
 ADDR_COLUMN_CHARS = 10
 
 
@@ -22,12 +21,27 @@ class HexView(wx.ScrolledWindow):
         self._data: bytes = b""
         self._highlight: Optional[tuple[int, int]] = None
         self._font = wx.Font(wx.FontInfo(10).Family(wx.FONTFAMILY_TELETYPE))
+        self._row_height = self.FromDIP(18)
         dc = wx.ClientDC(self)
         dc.SetFont(self._font)
         self._char_w, self._char_h = dc.GetTextExtent("0")
-        self.SetScrollRate(0, ROW_HEIGHT)
+        self.SetScrollRate(0, self._row_height)
         self.Bind(wx.EVT_PAINT, self._on_paint)
         self.Bind(wx.EVT_SIZE, lambda evt: (self._update_virtual_size(), evt.Skip()))
+        self.Bind(wx.EVT_DPI_CHANGED, self._on_dpi_changed)
+
+    def _on_dpi_changed(self, event: wx.DPIChangedEvent) -> None:
+        """Rebuild custom drawing metrics after moving to another monitor."""
+
+        self._font = wx.Font(wx.FontInfo(10).Family(wx.FONTFAMILY_TELETYPE))
+        self._row_height = self.FromDIP(18)
+        dc = wx.ClientDC(self)
+        dc.SetFont(self._font)
+        self._char_w, self._char_h = dc.GetTextExtent("0")
+        self.SetScrollRate(0, self._row_height)
+        self._update_virtual_size()
+        self.Refresh()
+        event.Skip()
 
     def set_data(self, data: bytes) -> None:
         self._data = data
@@ -44,7 +58,7 @@ class HexView(wx.ScrolledWindow):
     def _update_virtual_size(self) -> None:
         rows = max(1, (len(self._data) + BYTES_PER_ROW - 1) // BYTES_PER_ROW)
         width = (ADDR_COLUMN_CHARS + 2 + BYTES_PER_ROW * 3 + 2 + BYTES_PER_ROW) * self._char_w
-        self.SetVirtualSize((int(width), rows * ROW_HEIGHT))
+        self.SetVirtualSize((int(width), rows * self._row_height))
 
     def _on_paint(self, _evt: wx.PaintEvent) -> None:
         dc = wx.BufferedPaintDC(self)
@@ -61,8 +75,8 @@ class HexView(wx.ScrolledWindow):
         update_rect = self.GetUpdateRegion().GetBox()
         x0, y0 = self.CalcUnscrolledPosition(update_rect.GetLeft(), update_rect.GetTop())
         x1, y1 = self.CalcUnscrolledPosition(update_rect.GetRight(), update_rect.GetBottom())
-        first_row = max(0, y0 // ROW_HEIGHT)
-        last_row = min(len(self._data) // BYTES_PER_ROW, y1 // ROW_HEIGHT + 1)
+        first_row = max(0, y0 // self._row_height)
+        last_row = min(len(self._data) // BYTES_PER_ROW, y1 // self._row_height + 1)
 
         hex_x = (ADDR_COLUMN_CHARS + 2) * self._char_w
         ascii_x = hex_x + (BYTES_PER_ROW * 3 + 2) * self._char_w
@@ -72,7 +86,7 @@ class HexView(wx.ScrolledWindow):
             chunk = self._data[offset : offset + BYTES_PER_ROW]
             if not chunk:
                 continue
-            y = row * ROW_HEIGHT
+            y = row * self._row_height
 
             dc.SetTextForeground(addr_colour)
             dc.DrawText(f"{offset:08X}", 0, y)
@@ -83,7 +97,7 @@ class HexView(wx.ScrolledWindow):
                 if self._highlight and self._highlight[0] <= pos < self._highlight[1]:
                     dc.SetBrush(wx.Brush(highlight_bg))
                     dc.SetPen(wx.TRANSPARENT_PEN)
-                    dc.DrawRectangle(cell_x, y, 2 * self._char_w + 2, ROW_HEIGHT)
+                    dc.DrawRectangle(cell_x, y, 2 * self._char_w + self.FromDIP(2), self._row_height)
                     dc.SetTextForeground(wx.BLACK)
                 else:
                     dc.SetTextForeground(text_colour)
@@ -96,7 +110,7 @@ class HexView(wx.ScrolledWindow):
                 if self._highlight and self._highlight[0] <= pos < self._highlight[1]:
                     dc.SetBrush(wx.Brush(highlight_bg))
                     dc.SetPen(wx.TRANSPARENT_PEN)
-                    dc.DrawRectangle(cell_x, y, self._char_w, ROW_HEIGHT)
+                    dc.DrawRectangle(cell_x, y, self._char_w, self._row_height)
                     dc.SetTextForeground(wx.BLACK)
                 else:
                     dc.SetTextForeground(text_colour)

@@ -42,7 +42,8 @@ ID_REMOVE_RECORD = wx.NewIdRef()
 
 class MainFrame(wx.Frame):
     def __init__(self):
-        super().__init__(None, title="EFFDIR Editor", size=(1280, 860))
+        super().__init__(None, title="EFFDIR Editor")
+        self.SetInitialSize(self.FromDIP((1280, 860)))
         self.session: Optional[EditorSession] = None
 
         self._mgr = wx.aui.AuiManager(self)
@@ -54,15 +55,30 @@ class MainFrame(wx.Frame):
 
         self._mgr.AddPane(
             self.tree,
-            wx.aui.AuiPaneInfo().Left().Caption("Resource").MinSize((260, -1)).BestSize((320, -1)).CloseButton(False),
+            wx.aui.AuiPaneInfo()
+            .Left()
+            .Caption("Resource")
+            .MinSize(self.FromDIP((260, -1)))
+            .BestSize(self.FromDIP((320, -1)))
+            .CloseButton(False),
         )
         self._mgr.AddPane(
             self.diagnostics,
-            wx.aui.AuiPaneInfo().Bottom().Caption("Diagnostics").MinSize((-1, 140)).BestSize((-1, 200)).CloseButton(False),
+            wx.aui.AuiPaneInfo()
+            .Bottom()
+            .Caption("Diagnostics")
+            .MinSize(self.FromDIP((-1, 140)))
+            .BestSize(self.FromDIP((-1, 200)))
+            .CloseButton(False),
         )
         self._mgr.AddPane(
             self.hex_view,
-            wx.aui.AuiPaneInfo().Bottom().Caption("Hex").MinSize((-1, 160)).BestSize((-1, 220)).CloseButton(False),
+            wx.aui.AuiPaneInfo()
+            .Bottom()
+            .Caption("Hex")
+            .MinSize(self.FromDIP((-1, 160)))
+            .BestSize(self.FromDIP((-1, 220)))
+            .CloseButton(False),
         )
         self._mgr.AddPane(
             self.record_editor,
@@ -72,7 +88,7 @@ class MainFrame(wx.Frame):
         self._build_menu()
         self._build_toolbar()
         self.status = self.CreateStatusBar(2)
-        self.status.SetStatusWidths([-1, 260])
+        self.status.SetStatusWidths([-1, self.FromDIP(260)])
 
         self.tree.tree.Bind(wx.EVT_CONTEXT_MENU, self._on_tree_context_menu)
 
