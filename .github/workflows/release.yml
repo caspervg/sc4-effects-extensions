@@ -16,7 +16,123 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  validate-tag:
+    name: Validate Release Tag
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Validate version tag
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          if [[ ! "$TAG_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Release tags must match vMAJOR.MINOR.PATCH, for example v0.1.0. Got: $TAG_NAME"
+            exit 1
+          fi
+
+  detect-changes:
+    name: Detect Changed Components
+    runs-on: ubuntu-latest
+    needs: validate-tag
+    outputs:
+      dll: ${{ steps.changes.outputs.dll }}
+      editor: ${{ steps.changes.outputs.editor }}
+      any: ${{ steps.changes.outputs.any }}
+      previous_tag: ${{ steps.changes.outputs.previous_tag }}
+
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Compare with previous published release
+        id: changes
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          previous_tag="$(
+            gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+              --jq '.[] | select(.draft == false) | .tag_name' |
+              grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' |
+              grep -Fxv "$GITHUB_REF_NAME" |
+              head -n 1 || true
+          )"
+
+          dll=false
+          editor=false
+          if [[ -z "$previous_tag" ]]; then
+            echo "No previous published release found; releasing both components."
+            dll=true
+            editor=true
+          else
+            echo "Comparing $previous_tag..${GITHUB_REF_NAME}"
+            while IFS= read -r path; do
+              case "$path" in
+                CMakeLists.txt|CMakePresets.json|vcpkg.json|.gitmodules|README.md|src/*|cmake/*|dist/*|vendor/*)
+                  dll=true
+                  ;;
+              esac
+              case "$path" in
+                tools/effdir-editor/*)
+                  editor=true
+                  ;;
+              esac
+              if [[ "$path" == ".github/workflows/release.yml" ]]; then
+                dll=true
+                editor=true
+              fi
+            done < <(git diff --name-only "$previous_tag" "$GITHUB_SHA")
+          fi
+
+          if [[ "$dll" == true || "$editor" == true ]]; then
+            any=true
+          else
+            any=false
+          fi
+
+          echo "previous_tag=$previous_tag" >> "$GITHUB_OUTPUT"
+          echo "dll=$dll" >> "$GITHUB_OUTPUT"
+          echo "editor=$editor" >> "$GITHUB_OUTPUT"
+          echo "any=$any" >> "$GITHUB_OUTPUT"
+          echo "DLL changed: $dll"
+          echo "EFFDIR Editor changed: $editor"
+
+  test-effdir-editor:
+    name: Test EFFDIR Editor
+    runs-on: windows-latest
+    needs: detect-changes
+    if: needs.detect-changes.outputs.editor == 'true'
+    defaults:
+      run:
+        working-directory: tools/effdir-editor
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: "tools/effdir-editor/uv.lock"
+
+      - name: Install Python
+        run: uv python install 3.12
+
+      - name: Sync environment
+        run: uv sync --python 3.12 --group dev
+
+      - name: Test
+        run: uv run --python 3.12 pytest
+
   release-win32:
+    name: Package SC4 Effects Extensions
+    runs-on: windows-latest
+    needs: detect-changes
+    if: needs.detect-changes.outputs.dll == 'true'
     runs-on: windows-2022
 
     steps:
@@ -64,7 +180,7 @@ jobs:
           cmake --preset vs2022-win32-release
           cmake --build --preset vs2022-win32-release-build --parallel
 
-      - name: Package release assets
+      - name: Package release asset
         shell: powershell
         run: |
           $tag = "${{ github.ref_name }}"
@@ -76,19 +192,137 @@ jobs:
           Copy-Item "README.md" -Destination $packageDir
 
           $archivePath = Join-Path "${{ github.workspace }}" ("SC4EffectsExtensions-" + $tag + "-win32.zip")
-          if (Test-Path $archivePath) {
-            Remove-Item -LiteralPath $archivePath
-          }
-
           Compress-Archive -Path (Join-Path $packageDir '*') -DestinationPath $archivePath
-          "RELEASE_ARCHIVE=$archivePath" >> $env:GITHUB_ENV
 
-      - name: Publish GitHub release
-        shell: powershell
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload release asset
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-assets-plugin
+          path: SC4EffectsExtensions-${{ github.ref_name }}-win32.zip
+          if-no-files-found: error
+
+  package-effdir-editor:
+    name: Package EFFDIR Editor (${{ matrix.platform.name }})
+    runs-on: ${{ matrix.platform.os }}
+    needs:
+      - detect-changes
+      - test-effdir-editor
+    if: needs.detect-changes.outputs.editor == 'true'
+    continue-on-error: ${{ matrix.platform.experimental }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - name: Windows
+            os: windows-latest
+            archive: EFFDIR-Editor-windows-x64.zip
+            sbom: EFFDIR-Editor-windows-x64.cdx.json
+            experimental: false
+          - name: macOS
+            os: macos-latest
+            archive: EFFDIR-Editor-macos-arm64.zip
+            sbom: EFFDIR-Editor-macos-arm64.cdx.json
+            experimental: true
+
+    defaults:
+      run:
+        working-directory: tools/effdir-editor
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: "tools/effdir-editor/uv.lock"
+
+      - name: Install Python
+        run: uv python install 3.12
+
+      - name: Set release version
+        shell: bash
         run: |
-          gh release create "${{ github.ref_name }}" "$env:RELEASE_ARCHIVE" `
-            --repo "${{ github.repository }}" `
-            --title "${{ github.ref_name }}" `
+          version="${GITHUB_REF_NAME#v}"
+          uv run --python 3.12 python -c "import re, pathlib; p = pathlib.Path('src/effdir_editor/version.py'); p.write_text(re.sub(r'VERSION = \"[^\"]+\"', 'VERSION = \"$version\"', p.read_text(encoding='utf-8')), encoding='utf-8'); p = pathlib.Path('pyproject.toml'); p.write_text(re.sub(r'^version = \"[^\"]+\"', 'version = \"$version\"', p.read_text(encoding='utf-8'), flags=re.M), encoding='utf-8')"
+
+      - name: Verify baked version
+        shell: bash
+        run: |
+          expected="${GITHUB_REF_NAME#v}"
+          actual="$(uv run --python 3.12 python -c 'from effdir_editor.version import get_version; print(get_version())')"
+          test "$actual" = "$expected"
+
+      - name: Sync build environment
+        run: uv sync --python 3.12 --group build
+
+      - name: Generate SBOM
+        shell: bash
+        run: uvx --from cyclonedx-bom cyclonedx-py environment .venv --output-format JSON --output-file "${{ matrix.platform.sbom }}"
+
+      - name: Build executable
+        run: uv run --python 3.12 pyinstaller --clean --noconfirm EFFDIR-Editor.spec
+
+      - name: Bundle README and SBOM (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Copy-Item README.md, "${{ matrix.platform.sbom }}" dist/EFFDIR-Editor/
+
+      - name: Bundle README and SBOM (macOS)
+        if: runner.os == 'macOS'
+        run: cp README.md "${{ matrix.platform.sbom }}" dist/EFFDIR-Editor.app/Contents/Resources/
+
+      - name: Ad-hoc sign macOS bundle
+        if: runner.os == 'macOS'
+        run: codesign --deep --force --sign - dist/EFFDIR-Editor.app
+
+      - name: Create Windows archive
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path dist/EFFDIR-Editor -DestinationPath "${{ matrix.platform.archive }}"
+
+      - name: Create macOS archive
+        if: runner.os == 'macOS'
+        run: ditto -c -k --sequesterRsrc --keepParent dist/EFFDIR-Editor.app "${{ matrix.platform.archive }}"
+
+      - name: Upload release assets
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-assets-effdir-${{ matrix.platform.name }}
+          path: |
+            tools/effdir-editor/${{ matrix.platform.archive }}
+            tools/effdir-editor/${{ matrix.platform.sbom }}
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs:
+      - detect-changes
+      - release-win32
+      - package-effdir-editor
+    if: >-
+      always() &&
+      needs.detect-changes.result == 'success' &&
+      needs.detect-changes.outputs.any == 'true' &&
+      needs.release-win32.result != 'failure' &&
+      needs.package-effdir-editor.result != 'failure'
+
+    steps:
+      - name: Download release assets
+        uses: actions/download-artifact@v7
+        with:
+          pattern: release-assets-*
+          path: release-artifacts
+          merge-multiple: true
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG_NAME" release-artifacts/* \
+            --repo "${{ github.repository }}" \
+            --title "$TAG_NAME" \
             --generate-notes
