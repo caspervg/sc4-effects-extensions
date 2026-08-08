@@ -130,7 +130,6 @@ jobs:
 
   release-win32:
     name: Package SC4 Effects Extensions
-    runs-on: windows-latest
     needs: detect-changes
     if: needs.detect-changes.outputs.dll == 'true'
     runs-on: windows-2022
