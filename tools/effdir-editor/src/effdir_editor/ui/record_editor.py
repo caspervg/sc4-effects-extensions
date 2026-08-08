@@ -1,8 +1,7 @@
 """Record editor: a property grid over one record's fields.
 
-Scalar/vector fields are shown inline; complex child records remain
-navigated through the resource tree. Shows binding label + evidence as help
-text, and a detail strip for path/wire-type/evidence, per
+Scalar, vector, and nested record fields are shown inline. Shows binding
+label + evidence as help text, and a detail strip for path/wire-type/evidence, per
 effdir-editor-spec.md's "Field presentation".
 """
 
@@ -22,6 +21,21 @@ from ..editor.session import EditorSession
 from ..wire import Bounds2, Bounds3, Raw, Vec2, Vec3, WireString, WireVector
 
 _KEY_LABEL_SUBSTRINGS = ("key", "_id")
+
+_FIELD_LABELS = {
+    # Serialized and copied, but no text-parser setter or runtime read was
+    # found in the symbolized Mac build. Keep the offset-bearing model names
+    # while qualifying their editor labels rather than declaring padding.
+    ("ParticleDescriptor", "value_164"): "value_164 (unused?)",
+    ("ParticleDescriptor", "value_166"): "value_166 (unused?)",
+    ("ParticleDescriptor", "value_168"): "value_168 (unused?)",
+    ("DynamicParticleDescriptor", "value_14"): "value_14 (unused?)",
+    ("DynamicParticleDescriptor", "value_24"): "value_24 (unused?)",
+    ("ScrubberDescription", "value_10"): "value_10 (unused?)",
+    ("EventRecord", "name"): "definition_name",
+    ("EventRecord", "time"): "epicenter_radius (flash only)",
+    ("EventRecord", "value"): "resolved_description_index",
+}
 
 # Scalar fields confirmed (not guessed) to be two-state, rendered as a
 # checkbox instead of a numeric field. A starter set -- see catalog.py's
@@ -49,6 +63,14 @@ _HEX_FIELDS = {
     # Effect-key map entries contain resource-style group/instance IDs.
     ("StringU32U32Record", "group_id"),
     ("StringU32U32Record", "instance_id"),
+}
+
+# Confirmed normalized-float RGB curves. Restrict swatches to these paths;
+# arbitrary Vec3 fields are positions, forces, directions, or dimensions.
+_COLOR_VECTOR_FIELDS = {
+    ("ParticleDescriptor", "color_curve"),
+    ("DecalDescriptor", "color"),
+    ("LightDescriptor", "color"),
 }
 
 # wxPython's propgrid stubs export this as ``ReadOnly``, but some installed
@@ -84,11 +106,13 @@ class RecordEditor(wx.Panel):
             self, style=wxpg.PG_SPLITTER_AUTO_CENTER | wxpg.PGMAN_DEFAULT_STYLE
         )
         self.grid.AddPage("Fields")
-        self.grid.SetColumnCount(2)
+        self.grid.SetColumnCount(3)
         self.grid.SetColumnTitle(0, "Field")
         self.grid.SetColumnTitle(1, "Value")
-        self.grid.SetColumnProportion(0, 55)
-        self.grid.SetColumnProportion(1, 45)
+        self.grid.SetColumnTitle(2, "Preview")
+        self.grid.SetColumnProportion(0, 48)
+        self.grid.SetColumnProportion(1, 37)
+        self.grid.SetColumnProportion(2, 15)
         self.detail = wx.StaticText(self, label=" ")
         self.detail.SetFont(self.detail.GetFont().Smaller())
 
@@ -105,6 +129,7 @@ class RecordEditor(wx.Panel):
 
         self.grid.Bind(wxpg.EVT_PG_CHANGED, self._on_prop_changed)
         self.grid.Bind(wxpg.EVT_PG_SELECTED, self._on_prop_selected)
+        self.grid.Bind(wxpg.EVT_PG_DOUBLE_CLICK, self._on_prop_double_click)
         self.references_list.Bind(wx.EVT_LISTBOX_DCLICK, self._on_reference_activated)
 
     def show_record(self, session: EditorSession, path: Optional[str]) -> None:
@@ -132,13 +157,12 @@ class RecordEditor(wx.Panel):
         for child_path in _nodes.child_paths(session.working, path):
             value_at_path = _paths.get_path(session.working, child_path)
             kind = _nodes.classify(value_at_path)
-            if kind == "record":
-                continue
             node = api.get_node(session, child_path)
             # For a collection's own items, child_path is "path[i]" (no dot
             # separator) -- strip the shared prefix so rows read "[0]",
             # "[1]", ... instead of repeating the collection's own name.
             label = child_path[len(path):] if child_path.startswith(path) else child_path.rsplit(".", 1)[-1]
+            label = _FIELD_LABELS.get((self._parent_record_type(child_path), label), label)
             if kind == "collection":
                 prop = self._make_vector_property(label, child_path, value_at_path, page)
             else:
@@ -151,6 +175,10 @@ class RecordEditor(wx.Panel):
                 pass
             else:
                 page.Append(prop)
+                if kind == "record":
+                    prop.ChangeFlag(_PG_READ_ONLY, True)
+                    prop.SetExpanded(False)
+                    self._add_record_children(page, prop, child_path)
                 if node.raw is not None and node.raw.wire_type.startswith("bitset<"):
                     self._add_bitset_children(page, prop, child_path, node.raw.wire_type, int(node.value))
             help_bits = [f"evidence: {node.summary.evidence}"]
@@ -158,12 +186,42 @@ class RecordEditor(wx.Panel):
                 help_bits.insert(0, f"command: {node.summary.label}")
             if kind == "collection":
                 help_bits.insert(0, "expand to inspect/edit vector elements")
+            elif kind == "record":
+                help_bits.insert(0, "expand to inspect/edit nested fields")
             page.SetPropertyHelpString(prop, "; ".join(help_bits))
             # Zebra-strip top-level properties, and let expandable children
             # inherit the exact same tint as their parent block.
             self.grid.SetPropertyBackgroundColour(prop, self._property_group_colour(group_index))
             group_index += 1
         self.grid.RefreshGrid()
+
+    def _add_record_children(self, page, parent, path: str) -> None:
+        """Recursively expose a dataclass record beneath a property row."""
+
+        for child_path in _nodes.child_paths(self._session.working, path):
+            value = _paths.get_path(self._session.working, child_path)
+            kind = _nodes.classify(value)
+            node = api.get_node(self._session, child_path)
+            label = child_path.rsplit(".", 1)[-1]
+            label = _FIELD_LABELS.get((self._parent_record_type(child_path), label), label)
+
+            if kind == "collection":
+                self._make_vector_property(label, child_path, value, page, parent=parent)
+                continue
+
+            child = self._make_property(label, child_path, kind, node)
+            if child is None:
+                continue
+            property_data = ("path", child_path)
+            child.SetClientData(property_data)
+            self._ui_property_data[child_path] = property_data
+            page.AppendIn(parent, child)
+            if kind == "record":
+                child.ChangeFlag(_PG_READ_ONLY, True)
+                child.SetExpanded(False)
+                self._add_record_children(page, child, child_path)
+            elif node.raw is not None and node.raw.wire_type.startswith("bitset<"):
+                self._add_bitset_children(page, child, child_path, node.raw.wire_type, int(node.value))
 
     def _parent_record_type(self, path: str) -> Optional[str]:
         parent_path = _paths.parent_path(path)
@@ -206,6 +264,8 @@ class RecordEditor(wx.Panel):
             return wxpg.StringProperty(label, property_name, value or "")
         if kind == "value":
             return wxpg.StringProperty(label, property_name, self._format_value(value))
+        if kind == "record":
+            return wxpg.StringProperty(label, property_name, type(value).__name__)
         return None
 
     def _make_bitset_property(
@@ -242,14 +302,21 @@ class RecordEditor(wx.Panel):
             self._ui_property_data[bit_name] = property_data
             page.AppendIn(parent, checkbox)
 
-    def _make_vector_property(self, label: str, path: str, vector: WireVector, page) -> wxpg.PGProperty:
+    def _make_vector_property(
+        self,
+        label: str,
+        path: str,
+        vector: WireVector,
+        page,
+        *,
+        parent=None,
+    ) -> wxpg.PGProperty:
         """Add a compact, expandable view of a wire vector to its parent.
 
         Scalar and fixed-shape vector elements reuse the normal editors, so
         curves such as ``shake.amplitude`` can be inspected and edited in
-        place. More complex record elements get a concise read-only row;
-        their full fields remain available by expanding the vector in the
-        resource tree.
+        place. Record elements get a read-only parent row whose own fields
+        can be expanded and edited inline as well.
         """
 
         prop = wxpg.StringProperty(label, path, self._format_vector(vector))
@@ -257,7 +324,10 @@ class RecordEditor(wx.Panel):
         prop.SetClientData(property_data)
         self._ui_property_data[path] = property_data
         prop.SetExpanded(False)
-        page.Append(prop)
+        if parent is None:
+            page.Append(prop)
+        else:
+            page.AppendIn(parent, prop)
         prop.ChangeFlag(_PG_READ_ONLY, True)
         for index, item in enumerate(vector.items):
             child_path = f"{path}[{index}]"
@@ -280,8 +350,13 @@ class RecordEditor(wx.Panel):
                 child.SetAttribute(wxpg.PG_UINT_BASE, wxpg.PG_BASE_HEX)
                 child.SetAttribute(wxpg.PG_UINT_PREFIX, wxpg.PG_PREFIX_0x)
             page.AppendIn(prop, child)
+            if self._vector_is_color(path) and isinstance(item, Vec3):
+                self._set_color_preview_cell(child, item)
             if child_kind == "record" or child_kind == "collection":
                 child.ChangeFlag(_PG_READ_ONLY, True)
+            if child_kind == "record":
+                child.SetExpanded(False)
+                self._add_record_children(page, child, child_path)
         return prop
 
     def _property_group_colour(self, group_index: int) -> wx.Colour:
@@ -319,6 +394,41 @@ class RecordEditor(wx.Panel):
             ("ParticleDescriptor", "model_keys"),
             ("DynamicParticleDescriptor", "model_keys"),
         }
+
+    def _vector_is_color(self, path: str) -> bool:
+        tokens = _paths.tokenize(path)
+        if not tokens or not isinstance(tokens[-1], str):
+            return False
+        record_path = _paths.parent_path(path)
+        record = _paths.get_path(self._session.working, record_path) if record_path else self._session.working
+        return (type(record).__name__, tokens[-1]) in _COLOR_VECTOR_FIELDS
+
+    @staticmethod
+    def _color_channels(value: Vec3) -> tuple[int, int, int]:
+        def channel(component: float) -> int:
+            return max(0, min(255, round(float(component) * 255.0)))
+
+        return channel(value.x), channel(value.y), channel(value.z)
+
+    @classmethod
+    def _color_hex(cls, value: Vec3) -> str:
+        red, green, blue = cls._color_channels(value)
+        return f"#{red:02X}{green:02X}{blue:02X}"
+
+    @classmethod
+    def _color_colour(cls, value: Vec3) -> wx.Colour:
+        return wx.Colour(*cls._color_channels(value))
+
+    def _set_color_preview_cell(self, prop: wxpg.PGProperty, value: Vec3) -> None:
+        colour = self._color_colour(value)
+        luminance = 0.2126 * colour.Red() + 0.7152 * colour.Green() + 0.0722 * colour.Blue()
+        self.grid.SetPropertyCell(
+            prop,
+            2,
+            self._color_hex(value),
+            fgCol=wx.BLACK if luminance >= 140 else wx.WHITE,
+            bgCol=colour,
+        )
 
     @classmethod
     def _format_vector(cls, vector: WireVector) -> str:
@@ -431,6 +541,51 @@ class RecordEditor(wx.Panel):
         prop = self.grid.GetPropertyByName(vector_path)
         if prop is not None:
             prop.SetValue(self._format_vector(vector))
+        if self._vector_is_color(vector_path):
+            for index, item in enumerate(vector.items):
+                if not isinstance(item, Vec3):
+                    continue
+                child = self.grid.GetPropertyByName(self._vector_property_name(vector_path, index))
+                if child is None:
+                    continue
+                self._set_color_preview_cell(child, item)
+
+    def _on_prop_double_click(self, event: wxpg.PropertyGridEvent) -> None:
+        prop = event.GetProperty()
+        if prop is None or self._session is None:
+            event.Skip()
+            return
+        client_data = self._property_data(prop)
+        if not (isinstance(client_data, tuple) and client_data and client_data[0] == "path"):
+            path = prop.GetName()
+        else:
+            path = client_data[1]
+        current = _paths.get_path(self._session.working, path)
+        if _nodes.classify(current) == "record":
+            # Let wx handle the native double-click expand/collapse action.
+            event.Skip()
+            return
+        if event.GetColumn() != 2:
+            event.Skip()
+            return
+        vector_path = _paths.parent_path(path)
+        if not isinstance(current, Vec3) or not self._vector_is_color(vector_path):
+            event.Skip()
+            return
+
+        colour_data = wx.ColourData()
+        colour_data.SetColour(self._color_colour(current))
+        colour_data.SetChooseFull(True)
+        with wx.ColourDialog(self, colour_data) as dialog:
+            if dialog.ShowModal() != wx.ID_OK:
+                return
+            colour = dialog.GetColourData().GetColour()
+
+        new_value = Vec3(colour.Red() / 255.0, colour.Green() / 255.0, colour.Blue() / 255.0)
+        api.set_raw(self._session, path, new_value)
+        prop.SetValue(self._format_value(new_value))
+        self._refresh_vector_summary(path)
+        self._on_change(path)
 
     def _on_prop_selected(self, event: wxpg.PropertyGridEvent) -> None:
         prop = event.GetProperty()

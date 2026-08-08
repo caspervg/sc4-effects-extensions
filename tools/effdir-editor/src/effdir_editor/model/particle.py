@@ -90,13 +90,13 @@ class ParticleDescriptor:
     flags_1: Raw[int]  # bitset<8>, "second bitset"
     flags_2: Raw[int]  # bitset<11>, "third bitset"
     life: Vec2  # +0x00c/+0x010, cParticleLifeCommand life min/max
-    value_014: Raw[float]
-    value_018: Raw[int]
+    emit_loop_interval: Raw[float]  # +0x014, emit -loop/-single interval
+    emit_loop_count: Raw[int]  # +0x018, emit -loop count; -single writes 1
     preroll: Raw[float]  # +0x01c, cParticleLifeCommand
-    value_020: Vec2
-    value_028: Vec2
-    value_030: Bounds3
-    value_048: Vec2
+    emit_delay: Vec2  # +0x020, emit/maintain -delay range
+    emit_trigger: Vec2  # +0x028, emit -trigger/-retrigger range
+    emit_velocity_bounds: Bounds3  # +0x030, emit -velocity/-dir/-vel
+    emit_speed: Vec2  # +0x048, emit speed minimum/maximum
     source_bounds: Bounds3  # +0x050, cParticleSourceCommand emission region
     size_vary: Raw[float]  # +0x068, cParticleSizeCommand
     aspect_vary: Raw[float]  # +0x06c, cParticleAspectCommand
@@ -113,8 +113,8 @@ class ParticleDescriptor:
     resource_key: Raw[int]  # +0x0d0, texture/model shared resource key
     draw_mode: Raw[int]  # +0x0d4, model draw option (parser writes 3)
     alignment_mode: Raw[int]  # +0x0d5, cParticleAlignmentCommand
-    value_0d8: Raw[float]
-    value_0dc: Raw[float]
+    sort_offset: Raw[float]  # +0x0d8, texture/model -sortOffset
+    stretch: Raw[float]  # +0x0dc, cParticleStretchCommand
     force: Vec3  # +0x0e0, cParticleForceCommand accumulated gravity/wind
     global_wind: Raw[float]  # +0x0ec
     bomb: Raw[float]  # +0x0f0
@@ -135,9 +135,9 @@ class ParticleDescriptor:
     death_by_water: Raw[float]  # +0x154
     height_range: Vec2  # +0x158, source belowHeight/aboveHeight/heightRange
     terrain_name: WireString  # +0x160
-    value_164: Raw[int]
-    value_166: Raw[int]
-    value_168: Raw[float]
+    value_164: Raw[int]  # serialized/copied, no parser setter or runtime read found
+    value_166: Raw[int]  # serialized/copied, no parser setter or runtime read found
+    value_168: Raw[float]  # serialized/copied, no parser setter or runtime read found
     random_walk_delay: Vec2  # +0x16c/+0x170
     random_walk_strength: Vec2  # +0x174/+0x178
     random_walk_turn: Vec2  # +0x17c/+0x180
@@ -146,7 +146,7 @@ class ParticleDescriptor:
     bank_range: Vec2  # +0x194/+0x198, alignment bank/windBank
     attractor_curve: WireVector[float]  # +0x19c
     attractor_strength: Raw[float]  # +0x1a8
-    value_1ac: Raw[int]
+    automata_id: Raw[int]  # +0x1ac, force -automata occupant/type id
     tractor_points: WireVector[TractorPoint]  # +0x1b0
     tractor_reset_speed: Raw[float]  # +0x1bc
     timed_effects: WireVector[TimedEffect]  # +0x1c4
@@ -166,13 +166,13 @@ def read_particle(cursor: ReadCursor) -> ParticleDescriptor:
         flags_1=read_bitset(cursor, 8),
         flags_2=read_bitset(cursor, 11),
         life=read_vec2(cursor),
-        value_014=read_f32(cursor),
-        value_018=read_u32(cursor),
+        emit_loop_interval=read_f32(cursor),
+        emit_loop_count=read_u32(cursor),
         preroll=read_f32(cursor),
-        value_020=read_vec2(cursor),
-        value_028=read_vec2(cursor),
-        value_030=read_bounds3(cursor),
-        value_048=read_vec2(cursor),
+        emit_delay=read_vec2(cursor),
+        emit_trigger=read_vec2(cursor),
+        emit_velocity_bounds=read_bounds3(cursor),
+        emit_speed=read_vec2(cursor),
         source_bounds=read_bounds3(cursor),
         size_vary=read_f32(cursor),
         aspect_vary=read_f32(cursor),
@@ -189,8 +189,8 @@ def read_particle(cursor: ReadCursor) -> ParticleDescriptor:
         resource_key=read_u32(cursor),
         draw_mode=read_u8(cursor),
         alignment_mode=read_u8(cursor),
-        value_0d8=read_f32(cursor),
-        value_0dc=read_f32(cursor),
+        sort_offset=read_f32(cursor),
+        stretch=read_f32(cursor),
         force=read_vec3(cursor),
         global_wind=read_f32(cursor),
         bomb=read_f32(cursor),
@@ -222,7 +222,7 @@ def read_particle(cursor: ReadCursor) -> ParticleDescriptor:
         bank_range=read_vec2(cursor),
         attractor_curve=read_vector(cursor, ReadCursor.f32, element_size=_F32),
         attractor_strength=read_f32(cursor),
-        value_1ac=read_u32(cursor),
+        automata_id=read_u32(cursor),
         tractor_points=read_vector(cursor, read_tractor_point, element_size=_TRACTOR_POINT),
         tractor_reset_speed=read_f32(cursor),
         timed_effects=read_vector(cursor, read_timed_effect),
@@ -241,13 +241,13 @@ def write_particle(writer: WriteCursor, p: ParticleDescriptor) -> None:
     write_raw(writer, p.flags_1)
     write_raw(writer, p.flags_2)
     write_vec2(writer, p.life)
-    write_raw(writer, p.value_014)
-    write_raw(writer, p.value_018)
+    write_raw(writer, p.emit_loop_interval)
+    write_raw(writer, p.emit_loop_count)
     write_raw(writer, p.preroll)
-    write_vec2(writer, p.value_020)
-    write_vec2(writer, p.value_028)
-    write_bounds3(writer, p.value_030)
-    write_vec2(writer, p.value_048)
+    write_vec2(writer, p.emit_delay)
+    write_vec2(writer, p.emit_trigger)
+    write_bounds3(writer, p.emit_velocity_bounds)
+    write_vec2(writer, p.emit_speed)
     write_bounds3(writer, p.source_bounds)
     write_raw(writer, p.size_vary)
     write_raw(writer, p.aspect_vary)
@@ -264,8 +264,8 @@ def write_particle(writer: WriteCursor, p: ParticleDescriptor) -> None:
     write_raw(writer, p.resource_key)
     write_raw(writer, p.draw_mode)
     write_raw(writer, p.alignment_mode)
-    write_raw(writer, p.value_0d8)
-    write_raw(writer, p.value_0dc)
+    write_raw(writer, p.sort_offset)
+    write_raw(writer, p.stretch)
     write_vec3(writer, p.force)
     write_raw(writer, p.global_wind)
     write_raw(writer, p.bomb)
@@ -297,7 +297,7 @@ def write_particle(writer: WriteCursor, p: ParticleDescriptor) -> None:
     write_vec2(writer, p.bank_range)
     write_vector(writer, p.attractor_curve, WriteCursor.f32)
     write_raw(writer, p.attractor_strength)
-    write_raw(writer, p.value_1ac)
+    write_raw(writer, p.automata_id)
     write_vector(writer, p.tractor_points, write_tractor_point)
     write_raw(writer, p.tractor_reset_speed)
     write_vector(writer, p.timed_effects, write_timed_effect)
@@ -332,13 +332,13 @@ def default_particle() -> ParticleDescriptor:
         flags_1=make_raw_bitset(0, 8),
         flags_2=make_raw_bitset(0, 11),
         life=zero_vec2(),
-        value_014=zero_f32(),
-        value_018=zero_u32(),
+        emit_loop_interval=zero_f32(),
+        emit_loop_count=zero_u32(),
         preroll=zero_f32(),
-        value_020=zero_vec2(),
-        value_028=zero_vec2(),
-        value_030=zero_bounds3(),
-        value_048=zero_vec2(),
+        emit_delay=zero_vec2(),
+        emit_trigger=zero_vec2(),
+        emit_velocity_bounds=zero_bounds3(),
+        emit_speed=zero_vec2(),
         source_bounds=zero_bounds3(),
         size_vary=zero_f32(),
         aspect_vary=zero_f32(),
@@ -355,8 +355,8 @@ def default_particle() -> ParticleDescriptor:
         resource_key=zero_u32(),
         draw_mode=zero_u8(),
         alignment_mode=zero_u8(),
-        value_0d8=zero_f32(),
-        value_0dc=zero_f32(),
+        sort_offset=zero_f32(),
+        stretch=zero_f32(),
         force=zero_vec3(),
         global_wind=zero_f32(),
         bomb=zero_f32(),
@@ -378,8 +378,8 @@ def default_particle() -> ParticleDescriptor:
         height_range=zero_vec2(),
         terrain_name=WireString(decoded="", raw_bytes=b"", encoding="utf8", framing=None, valid=True, changed=True),
         value_164=zero_u16(),
-        value_166=zero_u16(),
-        value_168=zero_f32(),
+        value_166=make_raw_u16(1),
+        value_168=make_raw_f32(1.0),
         random_walk_delay=zero_vec2(),
         random_walk_strength=zero_vec2(),
         random_walk_turn=zero_vec2(),
@@ -388,7 +388,7 @@ def default_particle() -> ParticleDescriptor:
         bank_range=zero_vec2(),
         attractor_curve=WireVector(count=0, items=[], source_span=None),
         attractor_strength=zero_f32(),
-        value_1ac=zero_u32(),
+        automata_id=zero_u32(),
         tractor_points=WireVector(count=0, items=[], source_span=None),
         tractor_reset_speed=zero_f32(),
         timed_effects=WireVector(count=0, items=[], source_span=None),

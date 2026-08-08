@@ -10,7 +10,8 @@ order, not ascending `+0xNN`:
     string effect_name, u32 start_message_1, u32 start_message_2, u32 start_message_3
 
 `DescriptionRec` embeds a `legacy-transform` (`S3DTransformLegacyLoad` at
-0x0009844A: 9 f32 matrix, 3 f32 offset, 1 f32 scale, 1 u32 mode) rather than
+0x0009844A: 3 row-major Vec3 matrix rows, a Vec3 translation, uniform scale,
+and a u32 revision word) rather than
 an opaque 40-byte blob. effdir.md documents the final field as "1 u8", but
 the decompile shows it read via vtable+0x24 (u32) -- only the low byte is
 stored into the object (`*param_2 = local_24[0]`), but the wire read
@@ -29,8 +30,6 @@ record.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Tuple
-
 from ..wire import (
     Raw,
     ReadCursor,
@@ -61,41 +60,53 @@ from .common import ReadProfile
 
 
 @dataclass
-class LegacyTransform:
-    """S3DTransformLegacyLoad: 9 f32 (3x3 matrix), 3 f32 (offset), 1 f32
-    (scale), 1 u32 (mode; only the low byte is semantically used)."""
+class Matrix3:
+    """Row-major cS3DMatrix3 storage exposed as three editable vectors."""
 
-    matrix: Tuple[float, float, float, float, float, float, float, float, float]
-    offset: Vec3
+    row_0: Vec3
+    row_1: Vec3
+    row_2: Vec3
+
+
+@dataclass
+class LegacyTransform:
+    """Legacy cS3DTransform payload without its derived in-memory flag byte."""
+
+    matrix: Matrix3
+    translation: Vec3
     scale: float
-    mode: Raw[int]
+    revision: Raw[int]  # u32 on wire; cS3DTransform stores/uses the low byte
 
 
 def read_legacy_transform(cursor: ReadCursor) -> LegacyTransform:
-    matrix = tuple(cursor.f32() for _ in range(9))
-    offset = read_vec3(cursor)
+    matrix = Matrix3(read_vec3(cursor), read_vec3(cursor), read_vec3(cursor))
+    translation = read_vec3(cursor)
     scale = cursor.f32()
-    mode = read_u32(cursor)
-    return LegacyTransform(matrix=matrix, offset=offset, scale=scale, mode=mode)
+    revision = read_u32(cursor)
+    return LegacyTransform(matrix=matrix, translation=translation, scale=scale, revision=revision)
 
 
 def write_legacy_transform(writer: WriteCursor, t: LegacyTransform) -> None:
-    for v in t.matrix:
-        writer.f32(v)
-    write_vec3(writer, t.offset)
+    write_vec3(writer, t.matrix.row_0)
+    write_vec3(writer, t.matrix.row_1)
+    write_vec3(writer, t.matrix.row_2)
+    write_vec3(writer, t.translation)
     writer.f32(t.scale)
-    write_raw(writer, t.mode)
+    write_raw(writer, t.revision)
 
 
 def default_legacy_transform() -> LegacyTransform:
-    """Identity transform. Not a documented constructor default (none is
-    given in effdir.md for DescriptionRec); a sane engineering default."""
+    """Identity transform matching cS3DTransform's constructor."""
 
     return LegacyTransform(
-        matrix=(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
-        offset=Vec3(0.0, 0.0, 0.0),
+        matrix=Matrix3(
+            row_0=Vec3(1.0, 0.0, 0.0),
+            row_1=Vec3(0.0, 1.0, 0.0),
+            row_2=Vec3(0.0, 0.0, 1.0),
+        ),
+        translation=Vec3(0.0, 0.0, 0.0),
         scale=1.0,
-        mode=make_raw_u32(0),
+        revision=make_raw_u32(0),
     )
 
 
@@ -104,78 +115,78 @@ class DescriptionRecord:
     """DescriptionRec (Read 0x003FC5A4)."""
 
     name: WireString
-    mode: Raw[int]
-    flags: Raw[int]  # bitset<2>; bit 0 = ignoreLength/respectLength
+    component_type: Raw[int]  # +0x04, tSC4ComponentEffectType
+    flags: Raw[int]  # bitset<2>: ignoreLength and systemSequence
     legacy_transform: LegacyTransform
     lod: Raw[int]
     lod_range: Raw[int]
-    value_46: Raw[int]
-    value_48: Raw[int]
+    shell_count: Raw[int]  # +0x46, particle "shells" count
+    shell_delay: Raw[int]  # +0x48, per-shell delay passed as param 0x101
     emit_scale_min: Raw[float]
     emit_scale_max: Raw[float]
     size_scale_min: Raw[float]
     size_scale_max: Raw[float]
-    value_5c: Raw[int]
+    selection_group: Raw[int]  # +0x5c, enclosing select-group id (0 = none)
     probability: Raw[int]
-    value_60: Raw[int]  # stream vtable +0x20; signedness/type unresolved
+    description_index: Raw[int]  # +0x60, resolved component-description index; -1 until resolved
     preservation: RecordPreservation = field(default_factory=RecordPreservation)
 
 
 def read_description_record(cursor: ReadCursor) -> DescriptionRecord:
     return DescriptionRecord(
         name=read_wire_string(cursor),
-        mode=read_u8(cursor),
+        component_type=read_u8(cursor),
         flags=read_bitset(cursor, 2),
         legacy_transform=read_legacy_transform(cursor),
         lod=read_u8(cursor),
         lod_range=read_u8(cursor),
-        value_46=read_u16(cursor),
-        value_48=read_u16(cursor),
+        shell_count=read_u16(cursor),
+        shell_delay=read_u16(cursor),
         emit_scale_min=read_f32(cursor),
         emit_scale_max=read_f32(cursor),
         size_scale_min=read_f32(cursor),
         size_scale_max=read_f32(cursor),
-        value_5c=read_u16(cursor),
+        selection_group=read_u16(cursor),
         probability=read_u16(cursor),
-        value_60=read_u32(cursor),
+        description_index=read_u32(cursor),
     )
 
 
 def write_description_record(writer: WriteCursor, d: DescriptionRecord) -> None:
     write_wire_string(writer, d.name)
-    write_raw(writer, d.mode)
+    write_raw(writer, d.component_type)
     write_raw(writer, d.flags)
     write_legacy_transform(writer, d.legacy_transform)
     write_raw(writer, d.lod)
     write_raw(writer, d.lod_range)
-    write_raw(writer, d.value_46)
-    write_raw(writer, d.value_48)
+    write_raw(writer, d.shell_count)
+    write_raw(writer, d.shell_delay)
     write_raw(writer, d.emit_scale_min)
     write_raw(writer, d.emit_scale_max)
     write_raw(writer, d.size_scale_min)
     write_raw(writer, d.size_scale_max)
-    write_raw(writer, d.value_5c)
+    write_raw(writer, d.selection_group)
     write_raw(writer, d.probability)
-    write_raw(writer, d.value_60)
+    write_raw(writer, d.description_index)
 
 
 def default_description_record() -> DescriptionRecord:
     return DescriptionRecord(
         name=WireString(decoded="", raw_bytes=b"", encoding="utf8", framing=None, valid=True, changed=True),
-        mode=make_raw_u8(0),
+        component_type=make_raw_u8(0),
         flags=make_raw_bitset(0, 2),
         legacy_transform=default_legacy_transform(),
         lod=make_raw_u8(1),  # parser default per effdir.md ParseDescRecOptions
         lod_range=make_raw_u8(6),  # parser default
-        value_46=make_raw_u16(0),
-        value_48=make_raw_u16(0),
+        shell_count=make_raw_u16(1),
+        shell_delay=make_raw_u16(16),
         emit_scale_min=make_raw_f32(1.0),
         emit_scale_max=make_raw_f32(1.0),
         size_scale_min=make_raw_f32(1.0),
         size_scale_max=make_raw_f32(1.0),
-        value_5c=make_raw_u16(0),
+        selection_group=make_raw_u16(0),
         probability=make_raw_u16(0),
-        value_60=make_raw_u32(0),
+        description_index=make_raw_u32(0xFFFFFFFF),
     )
 
 

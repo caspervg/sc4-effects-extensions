@@ -170,7 +170,9 @@ def build_node(
     attr_name = tokens[-1] if tokens else None
 
     display_name = resolve_display_name(value, path, reference_index)
-    referenced_by: List[Reference] = []
+    referenced_by: List[Reference] = (
+        list(reference_index.path_backlinks.get(path, [])) if reference_index else []
+    )
     if (
         reference_index
         and is_dataclass(value)

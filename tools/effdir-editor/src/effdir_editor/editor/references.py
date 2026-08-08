@@ -18,19 +18,17 @@ triggers, and 31/34 sequence `play` items resolve this way; the remainder
 presumably name effects defined in a different EFFDIR resource, which this
 single-resource index can't see.
 
-What is *not* built here: a backlink from a `ParticleDescriptor`/
-`DecalDescriptor`/`ShakeDescriptor`/`LightDescriptor` to the effects that
-use it. Those records carry no name field at all, and the field that would
-establish the join -- `DescriptionRecord.mode`/`.name` inside an effect's
-own `descriptions` vector (model/effect.py) -- has no resolved semantics
-yet (type selector? positional index? something else?) per effdir.md.
-Wiring that up without guessing needs another reverse-engineering pass.
+Event records are the exception among component references: their final u32
+is proven by `StartAncilliary` to index top-level `shakes` for bit 0 and
+`lights` for bits 2/3. Those direct references are included as
+path-based backlinks. DescriptionRecord component references remain excluded
+until their component-type mapping is complete.
 """
 
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List
 
 from ..model.resource import EffDirResource
@@ -46,6 +44,7 @@ class Reference:
 class ReferenceIndex:
     backlinks: Dict[int, List[Reference]]  # effect_descriptions index -> what names it
     names: Dict[int, str]  # effect_descriptions index -> its name, from effect_name_map
+    path_backlinks: Dict[str, List[Reference]] = field(default_factory=dict)
 
 
 def references_to_name(resource: EffDirResource, name: str) -> List[Reference]:
@@ -132,4 +131,32 @@ def build_reference_index(resource: EffDirResource) -> ReferenceIndex:
                         ),
                     )
                 )
-    return ReferenceIndex(backlinks=dict(index), names=names)
+    path_backlinks: Dict[str, List[Reference]] = {
+        f"effect_descriptions[{target}]": references
+        for target, references in index.items()
+    }
+    shake_count = len(resource.shakes.items)
+    light_count = len(resource.lights.items)
+    for effect_index, effect in enumerate(resource.effect_descriptions.items):
+        effect_name = names.get(effect_index, "")
+        owner = f'effect_descriptions[{effect_index}]'
+        if effect_name:
+            owner += f' "{effect_name}"'
+        for event_index, event in enumerate(effect.events.items):
+            flags = int(event.flags.value)
+            target = int(event.value.value)
+            source_path = f"effect_descriptions[{effect_index}].events[{event_index}]"
+            event_name = event.name.decoded
+            if flags & 1 and 0 <= target < shake_count:
+                path_backlinks.setdefault(f"shakes[{target}]", []).append(
+                    Reference(source_path, f'{owner} event[{event_index}] "{event_name}" (shakeEffect)')
+                )
+            if flags & (1 << 2) and 0 <= target < light_count:
+                path_backlinks.setdefault(f"lights[{target}]", []).append(
+                    Reference(source_path, f'{owner} event[{event_index}] "{event_name}" (flashEffect)')
+                )
+            if flags & (1 << 3) and 0 <= target < light_count:
+                path_backlinks.setdefault(f"lights[{target}]", []).append(
+                    Reference(source_path, f'{owner} event[{event_index}] "{event_name}" (tintEffect)')
+                )
+    return ReferenceIndex(backlinks=dict(index), names=names, path_backlinks=path_backlinks)

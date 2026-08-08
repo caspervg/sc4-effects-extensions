@@ -2,6 +2,7 @@ import struct
 
 import pytest
 
+from effdir_editor.wire import Vec3
 from effdir_editor.wire.cursor import CursorError, ReadCursor, WriteCursor
 from effdir_editor.wire.strings import (
     decode_string_length,
@@ -12,7 +13,16 @@ from effdir_editor.wire.strings import (
 )
 from effdir_editor.wire.types import make_raw_f32, make_raw_u32, read_f32, read_u32, write_raw
 from effdir_editor.wire.vectors import read_vector, write_vector
-from effdir_editor.model.components import read_camera, read_sequence
+from effdir_editor.model.components import (
+    default_scrubber,
+    default_sound,
+    read_camera,
+    read_sequence,
+    read_sound,
+)
+from effdir_editor.model.particle import default_particle
+from effdir_editor.model.effect import default_description_record
+from effdir_editor.editor.nodes import child_paths
 
 
 def test_scalar_round_trip():
@@ -177,8 +187,8 @@ def test_sequence_option_word_keeps_bitset_type():
 
     sequence = read_sequence(ReadCursor(w.getvalue()))
 
-    assert sequence.value_18.wire_type == "bitset<3>"
-    assert sequence.value_18.value == 0b101
+    assert sequence.flags.wire_type == "bitset<3>"
+    assert sequence.flags.value == 0b101
 
 
 def test_camera_option_word_keeps_bitset_type():
@@ -191,5 +201,49 @@ def test_camera_option_word_keeps_bitset_type():
 
     camera = read_camera(ReadCursor(w.getvalue()))
 
-    assert camera.value_0c.wire_type == "bitset<4>"
-    assert camera.value_0c.value == 0b1001
+    assert camera.flags.wire_type == "bitset<4>"
+    assert camera.flags.value == 0b1001
+    assert camera.zoom.value == 2
+    assert camera.rotation.value == 3
+
+
+def test_sound_option_word_keeps_bitset_type_and_constructor_default():
+    w = WriteCursor()
+    w.u16(0)
+    w.u32(1)
+    w.u32(0x12345678)
+    w.f32(0.25)
+    w.f32(3.0)
+
+    sound = read_sound(ReadCursor(w.getvalue()))
+
+    assert sound.flags.wire_type == "bitset<1>"
+    assert sound.flags.value == 1
+    assert default_sound().location_update_rate.value == 0.5
+    assert default_scrubber().map_value.value == 16.0
+
+    particle = default_particle()
+    assert particle.value_164.value == 0
+    assert particle.value_166.value == 1
+    assert particle.value_168.value == 1.0
+
+    description = default_description_record()
+    assert description.shell_count.value == 1
+    assert description.shell_delay.value == 16
+    assert description.selection_group.value == 0
+    assert description.description_index.value == 0xFFFFFFFF
+    assert description.legacy_transform.matrix.row_0 == Vec3(1.0, 0.0, 0.0)
+    assert description.legacy_transform.matrix.row_1 == Vec3(0.0, 1.0, 0.0)
+    assert description.legacy_transform.matrix.row_2 == Vec3(0.0, 0.0, 1.0)
+
+
+def test_legacy_transform_and_matrix_are_reflected_as_record_children():
+    description = default_description_record()
+
+    assert "legacy_transform" in child_paths(description, "")
+    assert "legacy_transform.matrix" in child_paths(description, "legacy_transform")
+    assert child_paths(description, "legacy_transform.matrix") == [
+        "legacy_transform.matrix.row_0",
+        "legacy_transform.matrix.row_1",
+        "legacy_transform.matrix.row_2",
+    ]

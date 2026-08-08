@@ -2,11 +2,10 @@
 
 Wire order per effdir.md, "Component records", cross-checked against
 Ghidra Read() decompiles for each class (see per-class notes below).
-Sequence bits 0-2 and camera bits 0-3 are read via a generic operator>>
-(bitset<N>) rather than a direct scalar dispatch, matching the documented
-bit options. They retain their generic `value_XX` field names for path
-compatibility, but preserve the bitset wire type so the UI can expose their
-individual flags.
+Sequence bits 0-2, sound bit 0, and camera bits 0-3 are read via specialized
+generic operator>> overloads (bitset<N>) rather than direct scalar dispatch.
+The UI therefore exposes their individual flags without losing the exact wire
+representation.
 """
 
 from __future__ import annotations
@@ -144,10 +143,10 @@ def default_attractor() -> AttractorDescription:
 # --- scrubber: u16 marker(Write=1), then the field list below -------------
 #
 # Ghidra cSC4ScrubberDescription::Read (0x003e1ae2) shows the WIRE order
-# diverges from ascending object offset: message_1/message_2/shape/
-# shape_value_3c/shape_bounds/shape_value_48/pause_duration are read BEFORE
-# conditional_28/value_2c, which come last, both gated on marker != 0 (not
-# just conditional_28 -- effdir-editor-spec.md's typed schema draft is wrong
+# diverges from ascending object offset: message_1/message_2/map_index/
+# map_value/map_half_extents/map_spread/pause_duration are read BEFORE
+# toxic/extinguish_fire, which come last, both gated on marker != 0 (not
+# just toxic -- effdir-editor-spec.md's typed schema draft is wrong
 # to mark only one of the pair optional). +0xc is read via a generic
 # operator>> (a bitset<7>, matching the documented scrubber bit options),
 # not a plain u32.
@@ -157,21 +156,21 @@ def default_attractor() -> AttractorDescription:
 class ScrubberDescription:
     marker: Raw[int]
     flags: Raw[int]  # +0xc, bitset<7>: noNetworks/noFlora/dezone/single/pauseSim/pauseSimHidden/pauseClock
-    value_10: Raw[int]
-    value_14: Raw[int]  # "-demolish"
+    value_10: Raw[int]  # serialized, but no parser setter or runtime read found
+    demolish: Raw[int]  # +0x14, "-demolish"
     action: Raw[int]  # +0x18, demolition action/effect packed value
     min_size: Raw[float]  # +0x1c, "-minDemolishSize"
     max_size: Raw[float]  # +0x20, "-maxDemolishSize"
-    value_24: Raw[int]  # "-toxic"
+    burn: Raw[int]  # +0x24, "-burn"
     message_1: Raw[int]  # +0x30
     message_2: Raw[int]  # +0x34
-    shape: Raw[int]  # +0x38, "-blob"/"-rect" selector
-    shape_value_3c: Raw[float]
-    shape_bounds: Vec2  # +0x40
-    shape_value_48: Raw[float]
+    map_index: Raw[int]  # +0x38, "-blob"/"-rect" selector, 1..8
+    map_value: Raw[float]  # +0x3c, value added to the selected effect map
+    map_half_extents: Vec2  # +0x40/+0x44, rectangle half-extents
+    map_spread: Raw[float]  # +0x48, rounded expansion/falloff count
     pause_duration: Raw[float]  # +0x4c
-    conditional_28: Optional[Raw[int]]  # read only if marker != 0, at the END of the record
-    value_2c: Optional[Raw[int]]  # also gated on marker != 0
+    toxic: Optional[Raw[int]]  # +0x28, read at record end when marker != 0
+    extinguish_fire: Optional[Raw[int]]  # +0x2c, same conditional wire tail
     preservation: RecordPreservation = field(default_factory=RecordPreservation)
 
 
@@ -179,39 +178,39 @@ def read_scrubber(cursor: ReadCursor) -> ScrubberDescription:
     marker = read_u16(cursor)
     flags = read_bitset(cursor, 7)
     value_10 = read_u32(cursor)
-    value_14 = read_u32(cursor)
+    demolish = read_u32(cursor)
     action = read_u32(cursor)
     min_size = read_f32(cursor)
     max_size = read_f32(cursor)
-    value_24 = read_u32(cursor)
+    burn = read_u32(cursor)
     message_1 = read_u32(cursor)
     message_2 = read_u32(cursor)
-    shape = read_u32(cursor)
-    shape_value_3c = read_f32(cursor)
-    shape_bounds = read_vec2(cursor)
-    shape_value_48 = read_f32(cursor)
+    map_index = read_u32(cursor)
+    map_value = read_f32(cursor)
+    map_half_extents = read_vec2(cursor)
+    map_spread = read_f32(cursor)
     pause_duration = read_f32(cursor)
     has_conditional = marker.value != 0
-    conditional_28 = read_u32(cursor) if has_conditional else None
-    value_2c = read_u32(cursor) if has_conditional else None
+    toxic = read_u32(cursor) if has_conditional else None
+    extinguish_fire = read_u32(cursor) if has_conditional else None
     return ScrubberDescription(
         marker=marker,
         flags=flags,
         value_10=value_10,
-        value_14=value_14,
+        demolish=demolish,
         action=action,
         min_size=min_size,
         max_size=max_size,
-        value_24=value_24,
+        burn=burn,
         message_1=message_1,
         message_2=message_2,
-        shape=shape,
-        shape_value_3c=shape_value_3c,
-        shape_bounds=shape_bounds,
-        shape_value_48=shape_value_48,
+        map_index=map_index,
+        map_value=map_value,
+        map_half_extents=map_half_extents,
+        map_spread=map_spread,
         pause_duration=pause_duration,
-        conditional_28=conditional_28,
-        value_2c=value_2c,
+        toxic=toxic,
+        extinguish_fire=extinguish_fire,
     )
 
 
@@ -219,23 +218,23 @@ def write_scrubber(writer: WriteCursor, s: ScrubberDescription) -> None:
     write_raw(writer, s.marker)
     write_raw(writer, s.flags)
     write_raw(writer, s.value_10)
-    write_raw(writer, s.value_14)
+    write_raw(writer, s.demolish)
     write_raw(writer, s.action)
     write_raw(writer, s.min_size)
     write_raw(writer, s.max_size)
-    write_raw(writer, s.value_24)
+    write_raw(writer, s.burn)
     write_raw(writer, s.message_1)
     write_raw(writer, s.message_2)
-    write_raw(writer, s.shape)
-    write_raw(writer, s.shape_value_3c)
-    write_vec2(writer, s.shape_bounds)
-    write_raw(writer, s.shape_value_48)
+    write_raw(writer, s.map_index)
+    write_raw(writer, s.map_value)
+    write_vec2(writer, s.map_half_extents)
+    write_raw(writer, s.map_spread)
     write_raw(writer, s.pause_duration)
     # Mirror read_scrubber's marker condition so read/write always agree,
     # including after an edit to marker (see class docstring note).
     if s.marker.value != 0:
-        write_raw(writer, s.conditional_28 if s.conditional_28 is not None else make_raw_u32(0))
-        write_raw(writer, s.value_2c if s.value_2c is not None else make_raw_u32(0))
+        write_raw(writer, s.toxic if s.toxic is not None else make_raw_u32(0))
+        write_raw(writer, s.extinguish_fire if s.extinguish_fire is not None else make_raw_u32(0))
 
 
 def default_scrubber() -> ScrubberDescription:
@@ -243,20 +242,20 @@ def default_scrubber() -> ScrubberDescription:
         marker=make_raw_u16(1),
         flags=make_raw_bitset(0, 7),
         value_10=make_raw_u32(0),
-        value_14=make_raw_u32(0),
+        demolish=make_raw_u32(0),
         action=make_raw_u32(0),
         min_size=make_raw_f32(0.0),
         max_size=make_raw_f32(0.0),
-        value_24=make_raw_u32(0),
+        burn=make_raw_u32(0),
         message_1=make_raw_u32(0),
         message_2=make_raw_u32(0),
-        shape=make_raw_u32(0),
-        shape_value_3c=make_raw_f32(0.0),
-        shape_bounds=Vec2(0.0, 0.0),
-        shape_value_48=make_raw_f32(0.0),
+        map_index=make_raw_u32(0),
+        map_value=make_raw_f32(16.0),
+        map_half_extents=Vec2(0.0, 0.0),
+        map_spread=make_raw_f32(0.0),
         pause_duration=make_raw_f32(0.0),
-        conditional_28=make_raw_u32(0),
-        value_2c=make_raw_u32(0),
+        toxic=make_raw_u32(0),
+        extinguish_fire=make_raw_u32(0),
     )
 
 
@@ -282,7 +281,7 @@ def write_sequence_item(writer: WriteCursor, item: SequenceItem) -> None:
 class SequenceDescription:
     marker: Raw[int]
     items: WireVector[SequenceItem]
-    value_18: Raw[int]  # bitset<3>: sequence option bits 0-2
+    flags: Raw[int]  # +0x18, bitset<3>: loop/noOverlap/hardStart
     preservation: RecordPreservation = field(default_factory=RecordPreservation)
 
 
@@ -290,21 +289,21 @@ def read_sequence(cursor: ReadCursor) -> SequenceDescription:
     return SequenceDescription(
         marker=read_u16(cursor),
         items=read_vector(cursor, read_sequence_item),
-        value_18=read_bitset(cursor, 3),
+        flags=read_bitset(cursor, 3),
     )
 
 
 def write_sequence(writer: WriteCursor, s: SequenceDescription) -> None:
     write_raw(writer, s.marker)
     write_vector(writer, s.items, write_sequence_item)
-    write_raw(writer, s.value_18)
+    write_raw(writer, s.flags)
 
 
 def default_sequence() -> SequenceDescription:
     return SequenceDescription(
         marker=make_raw_u16(1),
         items=WireVector(count=0, items=[], source_span=None),
-        value_18=make_raw_bitset(0, 3),
+        flags=make_raw_bitset(0, 3),
     )
 
 
@@ -314,7 +313,7 @@ def default_sequence() -> SequenceDescription:
 @dataclass
 class SoundDescription:
     marker: Raw[int]
-    value_0c: Raw[int]
+    flags: Raw[int]  # +0x0c, bitset<1>; no parser setter/runtime test found
     resource_key: Raw[int]  # +0x10, "-name"
     location_update_rate: Raw[float]  # +0x14, inverse "-locationUpdateRate"
     length: Raw[float]  # +0x18
@@ -323,7 +322,7 @@ class SoundDescription:
 def read_sound(cursor: ReadCursor) -> SoundDescription:
     return SoundDescription(
         marker=read_u16(cursor),
-        value_0c=read_u32(cursor),
+        flags=read_bitset(cursor, 1),
         resource_key=read_u32(cursor),
         location_update_rate=read_f32(cursor),
         length=read_f32(cursor),
@@ -332,7 +331,7 @@ def read_sound(cursor: ReadCursor) -> SoundDescription:
 
 def write_sound(writer: WriteCursor, s: SoundDescription) -> None:
     write_raw(writer, s.marker)
-    write_raw(writer, s.value_0c)
+    write_raw(writer, s.flags)
     write_raw(writer, s.resource_key)
     write_raw(writer, s.location_update_rate)
     write_raw(writer, s.length)
@@ -341,9 +340,9 @@ def write_sound(writer: WriteCursor, s: SoundDescription) -> None:
 def default_sound() -> SoundDescription:
     return SoundDescription(
         marker=make_raw_u16(0),
-        value_0c=make_raw_u32(0),
+        flags=make_raw_bitset(0, 1),
         resource_key=make_raw_u32(0),
-        location_update_rate=make_raw_f32(0.0),
+        location_update_rate=make_raw_f32(0.5),
         length=make_raw_f32(0.0),
     )
 
@@ -354,36 +353,36 @@ def default_sound() -> SoundDescription:
 @dataclass
 class CameraDescription:
     marker: Raw[int]
-    value_0c: Raw[int]  # bitset<4>: camera option bits 0-3
-    value_10: Raw[int]  # zoom-minus-one or rotation value (union-like)
-    value_11: Raw[int]
+    flags: Raw[int]  # +0x0c, bitset<4>: zoom/rotation/target/slave
+    zoom: Raw[int]  # +0x10, zero-based zoom; Mac parser also writes rotation here
+    rotation: Raw[int]  # +0x11, runtime rotation; Mac text parser leaves it unset
     attach_radius: Raw[float]  # +0x14
 
 
 def read_camera(cursor: ReadCursor) -> CameraDescription:
     return CameraDescription(
         marker=read_u16(cursor),
-        value_0c=read_bitset(cursor, 4),
-        value_10=read_u8(cursor),
-        value_11=read_u8(cursor),
+        flags=read_bitset(cursor, 4),
+        zoom=read_u8(cursor),
+        rotation=read_u8(cursor),
         attach_radius=read_f32(cursor),
     )
 
 
 def write_camera(writer: WriteCursor, c: CameraDescription) -> None:
     write_raw(writer, c.marker)
-    write_raw(writer, c.value_0c)
-    write_raw(writer, c.value_10)
-    write_raw(writer, c.value_11)
+    write_raw(writer, c.flags)
+    write_raw(writer, c.zoom)
+    write_raw(writer, c.rotation)
     write_raw(writer, c.attach_radius)
 
 
 def default_camera() -> CameraDescription:
     return CameraDescription(
         marker=make_raw_u16(0),
-        value_0c=make_raw_bitset(0, 4),
-        value_10=make_raw_u8(0),
-        value_11=make_raw_u8(0),
+        flags=make_raw_bitset(0, 4),
+        zoom=make_raw_u8(0),
+        rotation=make_raw_u8(0),
         attach_radius=make_raw_f32(0.0),
     )
 

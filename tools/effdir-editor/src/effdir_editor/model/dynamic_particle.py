@@ -15,11 +15,12 @@ Member names from the dynamic-particle parser cross-reference (effdir.md,
 "Major-4 dynamic-particle descriptor"): `base_name` (+0x0c), `mass`
 (+0x10), `friction_min`/`friction_max` (+0x18/+0x1c), `angular_friction`
 (+0x20), `model_key` (+0x28), `model_keys` vector (+0x2c). `+0x08` flags
-and `+0x24` have no traced consumer. All three vanilla dynamic-particle
+and `+0x14/+0x24` have no traced parser setter or runtime consumer. All three vanilla dynamic-particle
 descriptors also store zero in the flags word. It remains `flags` because
 its bitset wire type is established, but bits 0-6 deliberately keep generic
 editor labels: the evidence supports "preserved and currently unconsumed",
-not seven invented reserved-bit names. `+0x24` likewise remains `value_24`.
+not seven invented reserved-bit names. The two scalars likewise retain their
+offset names and receive qualified `(unused?)` labels in the editor.
 """
 
 from __future__ import annotations
@@ -53,11 +54,11 @@ class DynamicParticleDescriptor:
     flags: Raw[int]  # bitset<7>; no parser/runtime users found, vanilla values all zero
     base_name: WireString
     mass: Raw[float]
-    value_14: Raw[float]
+    value_14: Raw[float]  # serialized/copied; no parser setter/runtime read found
     friction_min: Raw[float]
     friction_max: Raw[float]
     angular_friction: Raw[float]
-    value_24: Raw[float]
+    value_24: Raw[float]  # serialized/copied; no parser setter/runtime read found
     model_key: Raw[int]
     model_keys: WireVector[int]
 

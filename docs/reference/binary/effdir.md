@@ -151,9 +151,9 @@ writer but not for seeking in the file.
 | Brush | `u16 marker(Write=0)`, `u32@+0x0c`, `f32@+0x10`, `f32@+0x14`, `u8@+0x18`, `u32@+0x1c`, `cS3DVector2@+0x20`, `cS3DVector2@+0x28`, `f32@+0x30` |
 | Attractor | `u16 marker(Write=0)`, `string@+0x0c`, `u32@+0x10` |
 | Scrubber | `u16 marker(Write=1)`, `u32@+0x0c`, `u32@+0x10`, `u32@+0x14`, `u32@+0x18`, `f32@+0x1c`, `f32@+0x20`, `u32@+0x24`, conditional `u32@+0x28`, `u32@+0x2c`, `u32@+0x30`, `u32@+0x34`, `u32@+0x38`, `f32@+0x3c`, `cS3DVector2@+0x40`, `f32@+0x48`, `f32@+0x4c` |
-| Sequence | `u16 marker(Write=1)`, `vector<SequenceItem>@+0x0c`, `u32@+0x18`; each item is `cS3DVector2` followed by `string` |
-| Sound | `u16 marker(Write=0)`, `u32@+0x0c`, `u32@+0x10`, `f32@+0x14`, `f32@+0x18` |
-| Camera | `u16 marker(Write=0)`, `u32@+0x0c`, `u8@+0x10`, `u8@+0x11`, `f32@+0x14` |
+| Sequence | `u16 marker(Write=1)`, `vector<SequenceItem>@+0x0c`, `bitset<3>@+0x18`; each item is `cS3DVector2` followed by `string` |
+| Sound | `u16 marker(Write=0)`, `bitset<1>@+0x0c`, `u32@+0x10`, `f32@+0x14`, `f32@+0x18` |
+| Camera | `u16 marker(Write=0)`, `bitset<4>@+0x0c`, `u8@+0x10`, `u8@+0x11`, `f32@+0x14` |
 
 The scrubber reader only consumes the two fields at `+0x28` and `+0x2c` if
 the marker is nonzero; its writer emits them unconditionally. This is a real
@@ -292,27 +292,46 @@ string@+0x00, u8@+0x04, bitset<2>@+0x08,
 legacy-transform,
 u8@+0x44, u8@+0x45, u16@+0x46, u16@+0x48,
 f32@+0x4c, f32@+0x50, f32@+0x54, f32@+0x58,
-u16@+0x5c, u16@+0x5e, unresolved stream value@+0x60
+u16@+0x5c, u16@+0x5e, u32 resolved-description-index@+0x60
 ```
 
 `legacy-transform` is not an opaque 40-byte blob. `S3DTransformLegacyLoad`
 at `0x0009844A` consumes, in order:
 
 ```text
-9 x f32  (cS3DMatrix3)
-3 x f32  (cS3DVector3)
-1 x f32
-1 x u8
+3 x Vec3 (row-major cS3DMatrix3 rows)
+1 x Vec3 (translation)
+1 x f32  (uniform scale)
+1 x u32  (transform revision; object retains the low byte)
 ```
 
-The bitset is serialized as a `u32`. The final member uses stream vtable
-offset `+0x20`, so it is a raw four-byte scalar for now.
+The bitset is serialized as a `u32`. The legacy loader (`0x0009844A`) derives
+the in-memory matrix/translation/scale presence flags, then replaces the
+transform's one-byte revision counter with the low byte of the final wire
+word. `cS3DTransform::operator=` (`0x0062BA46`) increments that counter on
+mutation. The editor exposes three editable matrix rows, translation, scale,
+and revision instead of one opaque matrix tuple.
 
 `EventRec` (`Read 0x003FC69E`) is:
 
 ```text
 bitset<4>, string, f32, u32
 ```
+
+The four event bits are fully correlated between the group-effect text
+commands and `cSC4EffectsManager::StartAncilliary` (`0x00405030`):
+
+| Bit | Text producer | Runtime meaning |
+|---:|---|---|
+| 0 | `shakeEffect` | dispatch the resolved shake descriptor |
+| 1 | shake default or flash `-epicentre`/`-epicenter` | use the effect origin as an epicenter |
+| 2 | `flashEffect` | dispatch the resolved light descriptor as a screen flash |
+| 3 | `tintEffect` | dispatch the resolved light descriptor as a lighting tint |
+
+For an epicentered flash, the `f32` is the falloff radius (the parser default
+is `1000.0`). The final `u32` is the resolved shake/light descriptor index;
+the string retains the source definition name. Shake and tint do not consume
+the `f32` in the traced runtime path.
 
 The effect-description reader dispatches to the version-1 record layout when
 the second version word is `1`; the current major-4 resource uses the full
@@ -393,6 +412,7 @@ object offsets already listed above.
 | Brush `+0x30` | `-level` | same |
 | Attractor `+0x0c` | `-name` or `-group` string | `cGroupAttractorCommand::Parse`, `0x0078BA44` |
 | Attractor `+0x10` | name/group selector (`-group` sets `1`) | same |
+| Scrubber `+0x10` | no text assignment or runtime consumer found (`value_10 (unused?)`) | constructor `0x003E13F4`; reader/writer preserve it |
 | Scrubber `+0x14` | `-demolish` | `cGroupScrubberCommand::Parse`, `0x0078BC26` |
 | Scrubber `+0x24` | `-burn` | same |
 | Scrubber `+0x28` | `-toxic` | same |
@@ -401,24 +421,42 @@ object offsets already listed above.
 | Scrubber bitset bits 4–6 | `pauseSim`, `pauseSimHidden`, `pauseClock` | same |
 | Scrubber `+0x4c` | pause duration | same |
 | Scrubber `+0x30/+0x34` | `-message` arguments 1–2 | same |
-| Scrubber `+0x38` | `-blob`/`-rect` shape selector | same |
-| Scrubber `+0x3c..+0x48` | blob/rectangle shape values | same |
+| Scrubber `+0x38` | `-blob`/`-rect` effect-map index (1–8) | same; consumed by `cSC4ScrubberEffect::AddBlobToMap`, `0x003E16F2` |
+| Scrubber `+0x3c` | value added to the selected effect map | same; `cSC4EffectMaps::AddRectToMap`, `0x0041A97C` |
+| Scrubber `+0x40/+0x44` | rectangle half-extents | parser and `cSC4ScrubberEffect::SetTransforms`, `0x003E109C` |
+| Scrubber `+0x48` | rounded map expansion/falloff count | `AddBlobToMap` and `AddRectToMap` |
 | Scrubber `+0x18` | demolition action/effect packed value | same; exact sub-bit semantics open |
 | Scrubber `+0x1c/+0x20` | `-minDemolishSize`/`-maxDemolishSize` | same |
 | Sequence bitset bits 0–2 | `loop`, `noOverlap`, `hardStart` | `cSequenceEffectCommand::Parse`, `0x00784724` |
 | Sequence item vector | `wait` and `play` timing values | `cSequenceWaitCommand::Parse`, `0x00784B26`; `cSequencePlayCommand::Parse`, `0x00784C08` |
 | Sequence item string | `play` effect name | same |
-| Sound `+0x10` | `-name` resource key | `cGroupSoundCommand::Parse`, `0x0078CC8A` |
+| Sound bitset bit 0 (`+0x0c`) | no setter or runtime test found (`bit 0 (unused?)`) | `bitset<1>` stream overload `0x00768594`; reader `0x003E026E` |
+| Sound `+0x10` | `-name` resource key | `cGroupSoundCommand::Parse`, `0x0078CC8A`; passed to the sound system by `Start`, `0x003E0154` |
 | Sound `+0x14` | inverse `-locationUpdateRate` | same |
 | Sound `+0x18` | `-length` | same |
-| Camera bitset bits 0–3 | `zoom`, `rotation`, `target`, `slave` specified | `cGroupCameraCommand::Parse`, `0x0078B6B8` |
-| Camera `+0x10` | zoom-minus-one or rotation value | same; union-like field |
+| Camera bitset bits 0–3 | `zoom`, `rotation`, `target`, `slave` | `cGroupCameraCommand::Parse`, `0x0078B6B8`; all tested by `cSC4CameraEffect::Start`, `0x003DFBDA` |
+| Camera `+0x10` | zero-based zoom value | parser and `Start`; see parser discrepancy below |
+| Camera `+0x11` | runtime rotation value | `Start` passes it to `cSC4CameraControl::SetRotation` |
 | Camera `+0x14` | `attachRadius` | same |
 
 The scrubber action field is not reduced to guessed bit names: the parser
 combines `explode`, `createRubble`, `createBurntRubble`, and
 `demolishEffectID`, so the packed value must be retained as both raw bits and
 the known source options.
+
+The scrubber constructor (`0x003E13F4`) initializes map value `+0x3c` to
+`16.0`; the editor uses that value for new records. The sound constructor
+(`0x003DFE90`) similarly establishes `0.5` as the default stored update
+interval at `+0x14`. Sound flag bit 0 is still preserved and editable: the
+`unused?` label is negative evidence for this Mac build, not a reserved-bit
+claim.
+
+The Mac camera text parser has an internal inconsistency visible in the
+instructions at `0x0078B91E`: `rotation` sets flag bit 1 but stores its `0..3`
+argument in byte `+0x10`. Runtime `Start` instead reads rotation from `+0x11`,
+while using `+0x10` for zoom. Binary records therefore retain separate
+`zoom` and `rotation` bytes according to their runtime consumers; the editor
+does not model the parser's apparent erroneous write as union storage.
 
 ### Effect child records
 
@@ -427,21 +465,101 @@ the known source options.
 | DescriptionRec member | Text property | Notes |
 | --- | --- | --- |
 | `+0x08` bit 0 | `ignoreLength` / `respectLength` | `ignoreLength` sets it; `respectLength` clears it |
-| transform matrix at `+0x0c` | `rotateX`, `rotateY`, `rotateZ`, `rotateXYZ`, `rotateZXY` | angles are converted by the parser; matrix remains the binary value |
+| `+0x08` bit 1 | enclosing `systemSequence` block | set by `cGroupParticlesCommand::Parse`, `0x0078D6C4`; consumed by the model-particle chain path at `0x00406246` |
+| transform matrix at `+0x10` | `rotateX`, `rotateY`, `rotateZ`, `rotateXYZ`, `rotateZXY` | row-major 3×3 rotation matrix; angles are multiplied by `2π` |
 | `+0x34/+0x38/+0x3c` | `offset` | vector components |
 | `+0x40` | `scale` | transform flag is also updated |
 | `+0x44/+0x45` | `lod` / `lodRange` | low/high bytes; parser default is 1/6 |
+| `+0x46/+0x48` | particle `shells` count and stagger delay | `cGroupParticlesCommand::Parse`, `0x0078D6C4`; runtime creates `count` instances and applies `delay × shell index` at `0x00406246` |
 | `+0x4c/+0x50` | `emitScale` minimum/maximum | one value supplies both |
 | `+0x54/+0x58` | `sizeScale` minimum/maximum | one value supplies both |
+| `+0x5c` | enclosing `select` group ID | assigned by `AddDescription`/`AddAnonDescription`; consumed by `UpdateVisualEffect`, `0x0040658E` |
 | `+0x5e` | `prob` | stored through the parser's 16-bit encoding |
+| `+0x60` | resolved component-description index | anonymous records receive it immediately; named records begin at `-1` and collection resolution fills it before runtime |
 
 `cGroupDynamicParticleCommand::Parse` at `0x00784148` creates this record,
 assigns its child name string, initializes the `+0x04` byte to `0x10` for
 this command path, and invokes the option parser. The byte is therefore
-parser-observed, but its complete enum is not yet established. The scalar at
-`+0x60` has no text-parser assignment in the traced path.
+parser-observed, but its complete enum is not yet established. The
+`cDescriptionRec` constructor (`0x0077AE3A`) confirms defaults of `1` shell,
+`16` shell delay, no selection group/probability, and description index `-1`.
 
 ### Particle records: direct command assignments
+
+The three leading serialized values are the descriptor's complete flag
+storage. `cSC4ParticlesDescriptionBase` constructs object offsets `+0x00`,
+`+0x04`, and `+0x08` as zero (`0x003F54DA`); the current writer
+(`0x003F5BD8`) emits them first and the current reader (`0x003F61AA`) reads
+them first, as `bitset<32>`, `bitset<8>`, and `bitset<11>`. The text parser's
+working descriptor begins at `cSC4EffectsParser +0x120`, so parser accesses at
+`+0x120/+0x124/+0x128` are the same three object members, not three unrelated
+parser flags.
+
+The complete parser-observed bit map is:
+
+| Word | Bit | Text command/option that sets it |
+| --- | ---: | --- |
+| leading (`+0x00`, 32 bits) | 0 | `light` draw option |
+| | 1 | `emit` or `inject` (shared mode bit) |
+| | 2 | `maintain` |
+| | 3 | emission `sustain` |
+| | 4 | `noCull` draw option |
+| | 5 | emission `base` |
+| | 6 | source `model` |
+| | 7 | source `modelBase` |
+| | 8 | collision command present |
+| | 9 | collision `sticky` |
+| | 10 | `terrainRepel` |
+| | 11 | collision/source `killOutsideCity` |
+| | 12 | source `city` |
+| | 13 | source `cityWindySide` (also sets bit 12) |
+| | 14 | source `pinToTerrain` |
+| | 15 | source `pinToWater` |
+| | 16 | source height filter: `terrainOnly`, `waterOnly`, `seaOnly`, `lakeOnly`, `belowHeight`, `aboveHeight`, or `heightRange` |
+| | 17 | source `seaOnly` (with bit 16) |
+| | 18 | source `lakeOnly` (with bit 16) |
+| | 19 | emission `scale` |
+| | 20 | emission `areaScale` |
+| | 21 | emission `volumeScale` |
+| | 22 | source `scaleParticles` |
+| | 23 | random-walk command present |
+| | 24 | random-walk `wait` |
+| | 25 | random-walk `preferSea` |
+| | 26 | force `alphaAttractor` |
+| | 27 | force `motherDuck` |
+| | 28 | force `tractor` or `tractorRel` |
+| | 29 | texture `hflip` |
+| | 30 | texture `vflip` |
+| | 31 | timed child effect present |
+| second (`+0x04`, 8 bits) | 0 | collision `destroyBuildings` |
+| | 1-7 | no setter or runtime test found (`bit N (unused?)` in the editor) |
+| third (`+0x08`, 11 bits) | 0 | model command present |
+| | 1 | model `fakePerspective` |
+| | 2 | model `applyLighting` |
+| | 3 | model `moveEntireSlave` |
+| | 4 | model `slaveApplyAlpha`/`applyAlpha`, and force `alphaAttractor` (shared bit) |
+| | 5 | model `sustain` |
+| | 6 | model `modelSpeed` |
+| | 7 | alignment `windBank` |
+| | 8 | warp `wiggleVerts`, `uv`, or `alpha` (shared bit) |
+| | 9 | source `resetIncoming` |
+| | 10 | model `noCullFaces` |
+
+This table corrects three tempting but false presence correlations. `inject`
+sets leading bit 1, not bit 3; bit 3 is `sustain`. Random-walk `preferDir`
+writes `+0x184` but does not set bits 24 or 25. Plain `wiggle`/`wiggleDir`
+and generic alignment do not set third bits 8 and 7; those bits are specific
+to the options listed above.
+
+Runtime cross-references support the word identities and the active meanings:
+the `cSC4ParticlesEffect` methods test the leading word throughout emission,
+source, collision, random-walk, force, and rendering paths. In particular,
+`UpdateParticlePhysicsExtra` (`0x00417DC8`) tests second-word bit 0 before the
+building-destruction path. Across the traced particle runtime methods, no test
+of second-word bits 1-7 was found. This is strong evidence that bit 0 is the
+only active middle-word flag in this build, while `unused?` remains a qualified
+editor label rather than a claim that those serialized positions can never be
+used by another build.
 
 The following are source-to-member correlations only. They are intentionally
 phrased using command names where no independent binary semantic has been
@@ -457,7 +575,7 @@ established.
 | `+0x70` | `rotate` `vary` value | `cParticleRotateCommand::Parse`, `0x00786516` |
 | `+0x74` | `rotate` `offset` value | same |
 | `+0x88` vector | `emit` rate, `maintain`, or `inject` value | `0x0078667C`, `0x00785E28`, `0x00785F28` |
-| leading bitset bits 1–3 | `inject`, `maintain`, `sustain` | emit/maintain/inject handlers |
+| leading bitset bits 1–3 | shared `emit`/`inject`, `maintain`, `sustain` | emit/maintain/inject handlers |
 | `+0xac` vector | size-over-time command values | command dispatch; exact normalization still open |
 | `+0xb8` vector | aspect-over-time command values | same |
 | `+0xc4` vector | rotate-over-time command values | same |
@@ -530,7 +648,11 @@ Further command handlers fill the previously anonymous particle members:
 | `+0x20/+0x24` | emission `delay` range | same |
 | `+0x28/+0x2c` | emission `trigger`/`retrigger` range | same |
 | `+0x30` bounding box | emission `velocity` region | same |
+| `+0x48/+0x4c` | emission speed minimum/maximum | same |
 | leading bitset bits 19–21 | emission `scale`, `areaScale`, `volumeScale` | same |
+| `+0xd8` | draw `sortOffset` | `(anonymous namespace)::ParseDrawOptions`, `0x004018F0` |
+| `+0xdc` | particle `stretch` divisor | `cParticleStretchCommand::Parse`, `0x0077DEAA`; consumed by `cSC4ParticlesEffect::InitEffectsParticle`, `0x004182A4` |
+| `+0x1ac` | force `automata` occupant/type id | `cParticleForceCommand::Parse`, `0x0078710C`; consumed by `cSC4ParticlesEffect::UpdateAttractor`, `0x0041583E` |
 
 Additional particle constraints from the traced handlers:
 
@@ -554,9 +676,18 @@ Additional particle constraints from the traced handlers:
   `+0xac` curve (`cParticleSizeCommand::Parse`, `0x00786304`). This is a
   parser-unit transform, not proof of the engine's semantic unit.
 
-These observations explain more of the particle descriptor's mode sharing and
-normalization, but unassigned leading bits, bounding boxes, and several shared
-curve/force members remain raw until runtime consumers are traced.
+These observations explain the complete three-word particle flag map plus more
+of the descriptor's mode sharing and normalization. Bounding boxes and several
+shared curve/force members remain raw until runtime consumers are traced.
+
+Only three scalar particle placeholders remain: `u16 +0x164`, `u16 +0x166`,
+and `f32 +0x168`. The constructor (`0x003F54DA`) initializes them to `0`, `1`,
+and `1.0`; assignment and binary read/write paths copy or serialize them, but
+no text-parser setter or read in the traced `cSC4ParticlesEffect` runtime
+methods was found. The editor consequently keeps the stable offset names and
+shows `value_164 (unused?)`, `value_166 (unused?)`, and
+`value_168 (unused?)`. This is deliberately qualified negative evidence, not
+permission to discard their wire values.
 
 ### Major-4 dynamic-particle descriptor
 
@@ -587,9 +718,10 @@ three dynamic-particle records in the vanilla
 `EA5118B0-EA5118B1-00000001` resource have a zero flag word (`p_vehicle`,
 `p_train`, and `p_train_toxic`). Therefore bits 0-6 are best classified as
 serialized but unconsumed/reserved-looking in this build, not as named
-options. The editor preserves them and intentionally presents generic bit
-numbers. The floats at `+0x14` and `+0x24` have the same zero-in-vanilla and
-unconsumed status.
+options. The editor preserves them and intentionally presents qualified
+`bit N (unused?)` labels. The floats at `+0x14` and `+0x24` have the same
+zero-in-vanilla and unconsumed status and are shown as `value_14 (unused?)`
+and `value_24 (unused?)`.
 
 ### Decal descriptor
 
@@ -667,10 +799,9 @@ binary field's name.
 
 The names `size-over-time` and similar are deliberately tied to the parser
 command that fills the vector, not asserted as engine behavior. Several
-particle members still have no direct text assignment in the traced handlers:
-the leading bitsets' remaining bits, most bounding boxes and vectors, the
-legacy transform-related fields, random resource list, and the final scalar
-tail.
+Particle members still without a direct text assignment are explicitly
+qualified in their descriptor sections rather than treating the now-decoded
+DescriptionRec transform as opaque.
 
 ### Records not yet source-mapped
 
