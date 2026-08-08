@@ -40,6 +40,16 @@ Unknown variable: '%s'
 
 ## Typed helpers
 
+The typed setter commands normalize their input before storing it in the parser
+variable table. The stored value is still text, but the helper canonicalizes it
+first.
+
+- `set` stores the provided value text with no special type conversion
+- `seti` parses as integer and stores canonical integer text
+- `setf` parses as float and stores canonical float text
+- `setc` parses color text, applies optional transforms, and stores normalized color text
+- `setv3` parses vector text, applies optional transforms, and stores normalized vector text
+
 ### `setc`
 
 Recovered parse-time helpers:
@@ -62,3 +72,5 @@ Recovered parse-time helpers:
 - variable substitution is part of normal parsing
 - typed setters let you precompute reusable constants in the file itself
 - vector- and color-like values are safest when grouped into one quoted argument
+- variables participate in namespace lookup, including the explicit
+  `$namespace:name` form
