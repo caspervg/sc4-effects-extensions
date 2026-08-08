@@ -18,3 +18,8 @@
 *.log
 *.pyc
 **/__pycache__/**
+*.pyd
+*.toc
+*.dll
+**/dist/**
+**/build/**

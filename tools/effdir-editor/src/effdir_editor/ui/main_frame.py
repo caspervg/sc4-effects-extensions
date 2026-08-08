@@ -17,6 +17,7 @@ from ..editor import nodes as _nodes
 from ..editor import paths as _paths
 from ..editor.session import EditorSession
 from ..model.resource import default_resource, write_resource
+from ..version import app_title
 from .diagnostics_panel import DiagnosticsPanel
 from .hex_view import HexView
 from .record_editor import RecordEditor
@@ -42,7 +43,7 @@ ID_REMOVE_RECORD = wx.NewIdRef()
 
 class MainFrame(wx.Frame):
     def __init__(self):
-        super().__init__(None, title="EFFDIR Editor")
+        super().__init__(None, title=app_title())
         self.SetInitialSize(self.FromDIP((1280, 860)))
         self.session: Optional[EditorSession] = None
 
@@ -153,7 +154,7 @@ class MainFrame(wx.Frame):
         handle = ResourceHandle(package_path="", tgi="")
         session = EditorSession(handle=handle, source=source, original_bytes=b"", working=default_resource())
         self._load_session(session)
-        self.SetTitle("EFFDIR Editor — untitled")
+        self.SetTitle(app_title("untitled"))
 
     def _on_open(self, _evt) -> None:
         with wx.FileDialog(
@@ -197,7 +198,7 @@ class MainFrame(wx.Frame):
             return
 
         self._load_session(session)
-        self.SetTitle(f"EFFDIR Editor — {os.path.basename(path)}")
+        self.SetTitle(app_title(os.path.basename(path)))
         if session.working.preservation.original_payload is not None:
             wx.MessageBox(
                 "This resource could not be parsed (unsupported version or malformed data) "
@@ -235,7 +236,7 @@ class MainFrame(wx.Frame):
         except Exception as exc:
             wx.MessageBox(f"Save failed:\n{exc}", "Save failed", wx.OK | wx.ICON_ERROR)
             return
-        self.SetTitle(f"EFFDIR Editor — {os.path.basename(path)}")
+        self.SetTitle(app_title(os.path.basename(path)))
         self.status.SetStatusText(f"Saved ({result.backup_path or 'no backup'})", 0)
         self._refresh_diagnostics()
         self._update_enabled_state()
