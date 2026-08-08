@@ -1,0 +1,11 @@
+[mcp_servers.idea]
+url = "http://127.0.0.1:64342/stream"
+
+[mcp_servers.clion]
+url = "http://127.0.0.1:64362/stream"
+
+[mcp_servers.clion.tools.get_file_problems]
+approval_mode = "approve"
+
+[mcp_servers.clion.tools.skill_search]
+approval_mode = "approve"

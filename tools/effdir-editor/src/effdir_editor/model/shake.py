@@ -6,6 +6,11 @@ Wire order (effdir.md, "Shake and light"):
 Member names from the shake parser cross-reference (effdir.md, "Shake
 descriptor"): `length` (+0x00), `fade` (+0x04), `amplitude` vector (+0x08),
 `frequency` vector (+0x14), `aspect` (+0x20), `base_table` (+0x24).
+
+Runtime confirmation: SetShakeOffsets (Mac 0x00507A20, Windows 0x007C86D0)
+samples amplitude/frequency at elapsed/length, uses frequency to advance a
+64-entry random or sineY table, and scales the axes by 1/aspect and aspect.
+`fade` controls the early-stop tail rather than acting as a separate curve.
 """
 
 from __future__ import annotations

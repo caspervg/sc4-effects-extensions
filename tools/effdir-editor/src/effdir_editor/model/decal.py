@@ -11,16 +11,13 @@ per the decal child parser cross-reference; the typed schema draft in
 effdir-editor-spec.md only names three of the four, so `texture_repeat` is
 named here from the parser table instead of left as `value_XX`.
 
-Reader normalization quirk: "the reader normalizes the second byte to 2
-and sets a bit when that byte is zero" (effdir.md). Which flag bit is set
-is not identified in current evidence, so it is intentionally not
-replicated here (guessing a bit would violate the "unknown four-byte
-values must not be silently converted to a guessed ... value" rule). What
-*is* confirmed is kept out of the stored wire value entirely: `repeat_mode`
-retains the exact byte read from the file (so an unchanged round trip
-never rewrites a 0 to a 2), and `effective_repeat_mode()` below exposes the
-runtime-normalized value for display, per the three-layer separation
-between wire truth and semantic overlay.
+Reader normalization quirk: the reader normalizes the second byte to 2 and
+sets flag bit 6 when that byte is zero (`cSC4DecalDescription::Read`,
+0x0076270E). The normalization is intentionally not replicated in the stored
+wire values: `repeat_mode` and `flags` retain the exact bytes read from the
+file (so an unchanged round trip never rewrites a 0 to a 2 or synthesizes bit
+6), while `effective_repeat_mode()` below exposes the normalized mode for the
+semantic/display layer.
 """
 
 from __future__ import annotations
@@ -82,6 +79,17 @@ def effective_repeat_mode(d: DecalDescriptor) -> int:
     wire model keeps the original byte so writes stay lossless."""
 
     return 2 if d.repeat_mode.value == 0 else d.repeat_mode.value
+
+
+def effective_flags(d: DecalDescriptor) -> int:
+    """Runtime-normalized decal flags without modifying stored wire data.
+
+    The reader sets the static bit (bit 6) when the stored mode byte is zero.
+    Exposing that derived value separately lets the editor explain what the
+    game consumes while preserving an unchanged file byte-for-byte.
+    """
+
+    return d.flags.value | (1 << 6) if d.repeat_mode.value == 0 else d.flags.value
 
 
 def read_decal(cursor: ReadCursor) -> DecalDescriptor:

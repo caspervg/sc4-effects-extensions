@@ -234,9 +234,10 @@ vector<f32>, vector<f32>, vector<f32>, vector<cS3DVector3>, vector<f32>,
 f32, f32, f32, f32, cS3DVector2
 ```
 
-The reader normalizes the second byte to `2` and sets a bit when that byte is
-zero. That post-read behavior should be preserved by an editor rather than
-silently treated as a fixed wire default.
+The reader normalizes the second byte to `2` and sets bit 6 when that byte is
+zero (`cSC4DecalDescription::Read`, `0x0076270E`). That post-read behavior
+should be preserved by an editor rather than silently treated as a fixed wire
+default.
 
 ### Shake and light
 
@@ -709,6 +710,21 @@ that the only nested command families are `effectBase`, `model`, `mass`, and
 (thereby applying the `1.0` mass default), optionally inherits a named base
 descriptor, and resolves its name.
 
+The runtime roles of the named fields are confirmed by
+`cSC4DynamicParticleEffect::SetDescription` (`0x004B91A8`) and `Start`
+(`0x004BA6B0`). `SetDescription` chooses one model key uniformly from the
+vector when multiple keys are present, otherwise it uses the scalar key. It
+also derives the optional collision child-effect name with the
+`"%s_collide"` suffix.
+
+`Start` builds a `cSC4RigidBodySimulator2D::ObjectDesc`. Positive mass is
+stored in that object as reciprocal mass; zero or negative mass uses the
+sentinel `1e6`. Friction minimum, maximum, and angular values at
+`+0x18/+0x1c/+0x20` are copied directly, and the physics friction path is
+enabled when any of the three is positive. The resulting rigid-body particle
+is then used as the transform target for the optional base/collision visual
+effect.
+
 The seven-bit word at `+0x08` is serialized and copied by descriptor
 assignment, but none of the four direct parser handlers assigns it. The
 runtime descriptor consumers `cSC4DynamicParticleEffect::SetDescription`
@@ -721,7 +737,9 @@ serialized but unconsumed/reserved-looking in this build, not as named
 options. The editor preserves them and intentionally presents qualified
 `bit N (unused?)` labels. The floats at `+0x14` and `+0x24` have the same
 zero-in-vanilla and unconsumed status and are shown as `value_14 (unused?)`
-and `value_24 (unused?)`.
+and `value_24 (unused?)`. Neither appears in the rigid-body object assembled
+by `Start`; this is direct negative evidence from the core creation path, not
+just absence from the text parser.
 
 ### Decal descriptor
 
@@ -757,6 +775,33 @@ These are constructor defaults, not universal semantic defaults. The reader's
 zero-repeat normalization remains significant: a zero second byte becomes `2`
 and sets bit 6 (`0x0076270E`).
 
+The symbolized runtime closes the parser-only provenance for these fields.
+`cSC4DecalEffect::SetDescription` (`0x0041318E`), `Start` (`0x00412B26`),
+`Update` (`0x004127FA`), and `SetTransforms` (`0x00412F4A`) consume the copied
+descriptor as follows:
+
+| Descriptor member | Runtime use |
+| --- | --- |
+| `+0x04` texture key | creates the overlay/decal binding |
+| `+0x08` draw enum | passed to the overlay manager after creation |
+| `+0x09` mode | `1` loops, `2` stops at the end, `3` sustains at the end |
+| `+0x0c` life | converted to reciprocal playback rate |
+| `+0x10` rotate curve / `+0x54` variation | orientation over normalized life with a randomized offset |
+| `+0x1c` size curve / `+0x50` variation | decal size over normalized life with a randomized multiplier |
+| `+0x28` alpha curve / `+0x4c` variation | opacity over normalized life with a randomized multiplier |
+| `+0x34` color curve | overlay color over normalized life |
+| `+0x40` aspect curve | overlay aspect over normalized life |
+| `+0x58` repeat value | repeated-decal sizing path selected by bit 3 |
+| `+0x5c` offset | copied into the overlay geometry passed to the manager |
+
+The same runtime methods test every parser-named flag: bit 1 enables the lit
+overlay path, bit 2 selects the water overlay manager, bit 3 selects repeated
+geometry, bit 4 initializes a city-sized transform, bit 5 selects ring
+creation, and bit 6 selects the static-overlay path. No test of bit 0 occurs in
+these core descriptor consumers. It should therefore remain `bit 0 (unused?)`
+for this build rather than receiving an invented name. The draw enum is
+definitely consumed, but its complete numeric domain remains open.
+
 ### Shake descriptor
 
 The shake parser's working object begins at parser offset `+0x3e0`, matching
@@ -778,6 +823,31 @@ whereas `baseTable` is parsed through the executable's
 constructor starts both amplitude and frequency vectors empty
 (`cSC4ShakeDescription::cSC4ShakeDescription`, `0x0075E1F0`).
 
+The runtime consumer is now matched in both executables:
+
+| Role | Symbolized Mac | Windows 1.1.641 |
+| --- | --- | --- |
+| accumulate shake offsets | `cSC43DRender::SetShakeOffsets` `0x00507A20` | `0x007C86D0` |
+| start from a descriptor | `cSC43DRender::StartScreenShake` `0x00507F8C` | `0x007CACD0` |
+| stop by handle | `cSC43DRender::StopScreenShake` `0x00505626` | `0x007C8630` |
+| read final pixel offsets | `cSC43DRender::GetShakeOffsets` `0x00503478` | `0x007C2330` |
+
+Both builds perform the same calculation. Elapsed time is divided by
+`length`; that normalized time samples the amplitude and frequency curves.
+Frequency advances a persistent phase through a 64-entry base table.
+`baseTable = 0` selects a deterministic random two-axis table seeded with
+`0x58`; `baseTable = 1` selects `sineY`, whose X samples are zero. Aspect
+scales the two axes reciprocally: X uses `amplitude / aspect`, while Y uses
+`amplitude * aspect`.
+
+An epicentered shake is attenuated by
+`1 - distanceSquared / radiusSquared` and discarded outside the radius. The
+combined offset is additionally multiplied by `0.6^(4 - zoomLevel)` before
+being rounded to integer screen pixels. `fade` is not sampled as another
+curve. Stopping a shake with nonzero fade advances its effective elapsed time
+to `length - fade`, allowing the tail of the existing amplitude curve to run;
+zero fade removes it immediately.
+
 ### Light descriptor
 
 The light working object begins at parser offset `+0x414`:
@@ -797,6 +867,28 @@ The parser also has an explicit byte-range color scaling path; the editor
 should preserve that as a command transform rather than bake it into the
 binary field's name.
 
+The light runtime is also cross-binary matched:
+
+| Runtime path | Symbolized Mac | Windows 1.1.641 |
+| --- | --- | --- |
+| lighting tint update | `cSC4EffectsManager::UpdateLightingTint` `0x00404884` | `0x0058EC40` |
+| screen flash draw | `cSC4EffectsManager::DrawScreenFlashes` `0x00404924` | `0x0058E870` |
+
+Both use `elapsed / length` as normalized time and independently sample the
+color and strength curves. The tint path passes the sampled pair to the
+lighting manager and resets the tint after completion. The flash path uses the
+sampled color as its screen overlay color. Positive strength is clamped to
+`1.0` for overlay alpha; negative strength selects a separate subtractive
+render state and uses `-strength` as alpha.
+
+Epicentered flashes apply the same radial
+`1 - distanceSquared / radiusSquared` falloff and `0.6`-per-zoom-step
+attenuation as screen shake. The `light length -fade` spelling has a parser
+bug in this build: `cLightLengthCommand::Parse` (`0x0077DB2A`) writes the
+`-fade` value to the shake working descriptor at parser `+0x3e4`, not to
+the light descriptor at `+0x414`. Only the primary length at light `+0x18`
+is serialized or consumed by the light runtime.
+
 The names `size-over-time` and similar are deliberately tied to the parser
 command that fills the vector, not asserted as engine behavior. Several
 Particle members still without a direct text assignment are explicitly
@@ -805,11 +897,22 @@ DescriptionRec transform as opaque.
 
 ### Records not yet source-mapped
 
-The shake, light, decal, and major-4 dynamic-particle child commands are now
-partially correlated above; their runtime consumers, remaining flags, and
-normalization rules are still open. Particle members without a traced command
-assignment remain raw. None of these gaps should be filled from the Wiki or
-from the existing text-format documentation alone.
+Shake, light, and decal now have parser, wire, and runtime correlations above.
+The named major-4 dynamic-particle fields now reach the rigid-body creation
+path. Its floats at object offsets `+0x14` and `+0x24` and its seven-bit word
+are compatibility storage with no active meaning in the paired shipped runtimes:
+the constructor zeroes them, assignment and stream operators preserve them,
+the dynamic-particle block registers only `effectBase`, `model`, `mass`, and
+`friction`, and the complete effect vtable never reads them. All three vanilla
+dynamic-particle descriptors also store zero in all three members. Windows
+1.1.641 independently agrees: the matched `Start` at `0x00585190` consumes
+mass at object `+0x18` and friction at `+0x20/+0x24/+0x28`, skipping the
+compatibility floats at Windows `+0x1c/+0x2c` and the flag word. They remain
+editable raw fields so non-vanilla data can round-trip without loss. The
+complete decal draw-enum domain and the purpose (if any) of decal flag bit 0
+remain open. Particle members without
+a traced command assignment remain raw. None of these gaps should be filled
+from the Wiki or from the existing text-format documentation alone.
 
 ## Evidence and next decoder boundary
 

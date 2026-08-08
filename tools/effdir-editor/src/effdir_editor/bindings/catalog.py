@@ -652,7 +652,7 @@ CATALOG: List[CommandBinding] = [
         conflicts=[],
         evidence="parser",
         parser_refs=[CodeRef(address="0x00785890", role="parser")],
-        runtime_refs=[],
+        runtime_refs=[CodeRef(address="0x00412B26", role="consumer")],
         notes="+0x08, draw enum; enum values are not complete yet",
     ),
     CommandBinding(
@@ -673,7 +673,7 @@ CATALOG: List[CommandBinding] = [
         conflicts=[],
         evidence="parser",
         parser_refs=[CodeRef(address="0x00785890", role="parser")],
-        runtime_refs=[],
+        runtime_refs=[CodeRef(address="0x00412B26", role="consumer")],
         notes="+0x04 texture key, +0x5c offset vector, +0x58 repeat; bits 1/2/3/5 = light/water/repeat/ring",
     ),
     CommandBinding(
@@ -689,7 +689,10 @@ CATALOG: List[CommandBinding] = [
         conflicts=[],
         evidence="parser",
         parser_refs=[CodeRef(address="0x0078017C", role="parser")],
-        runtime_refs=[],
+        runtime_refs=[
+            CodeRef(address="0x0041318E", role="consumer"),
+            CodeRef(address="0x004127FA", role="consumer"),
+        ],
         notes="+0x0c, life value; +0x00 bit 6 = static; +0x09 mode static/loop/single/sustain = 1/1/2/3",
     ),
     CommandBinding(
@@ -705,7 +708,10 @@ CATALOG: List[CommandBinding] = [
         conflicts=[],
         evidence="parser",
         parser_refs=[CodeRef(address="0x007889A0", role="parser")],
-        runtime_refs=[],
+        runtime_refs=[
+            CodeRef(address="0x00412B26", role="consumer"),
+            CodeRef(address="0x004127FA", role="consumer"),
+        ],
         notes="+0x10 vector rotate curve, +0x54 rotate vary, cDecalRotateCommand::Parse",
     ),
     CommandBinding(
@@ -721,7 +727,11 @@ CATALOG: List[CommandBinding] = [
         conflicts=[],
         evidence="parser",
         parser_refs=[CodeRef(address="0x007887CC", role="parser")],
-        runtime_refs=[],
+        runtime_refs=[
+            CodeRef(address="0x0041318E", role="consumer"),
+            CodeRef(address="0x00412B26", role="consumer"),
+            CodeRef(address="0x004127FA", role="consumer"),
+        ],
         notes="+0x1c vector size curve, +0x50 size vary, +0x00 bit 4 = cityScale, cDecalSizeCommand::Parse",
     ),
     CommandBinding(
@@ -737,7 +747,10 @@ CATALOG: List[CommandBinding] = [
         conflicts=[],
         evidence="parser",
         parser_refs=[CodeRef(address="0x0078977C", role="parser")],
-        runtime_refs=[],
+        runtime_refs=[
+            CodeRef(address="0x00412B26", role="consumer"),
+            CodeRef(address="0x004127FA", role="consumer"),
+        ],
         notes="+0x28 vector alpha curve, +0x4c alpha vary, cDecalAlphaCommand::Parse",
     ),
     CommandBinding(
@@ -753,7 +766,10 @@ CATALOG: List[CommandBinding] = [
         conflicts=[],
         evidence="parser",
         parser_refs=[CodeRef(address="0x007898F8", role="parser")],
-        runtime_refs=[],
+        runtime_refs=[
+            CodeRef(address="0x00412B26", role="consumer"),
+            CodeRef(address="0x004127FA", role="consumer"),
+        ],
         notes="+0x34 vector color curve, cDecalColorCommand::Parse",
     ),
     CommandBinding(
@@ -769,7 +785,10 @@ CATALOG: List[CommandBinding] = [
         conflicts=[],
         evidence="parser",
         parser_refs=[CodeRef(address="0x00788910", role="parser")],
-        runtime_refs=[],
+        runtime_refs=[
+            CodeRef(address="0x00412B26", role="consumer"),
+            CodeRef(address="0x004127FA", role="consumer"),
+        ],
         notes="+0x40 vector aspect curve, cDecalAspectCommand::Parse",
     ),
     CommandBinding(
@@ -791,8 +810,11 @@ CATALOG: List[CommandBinding] = [
         conflicts=[],
         evidence="parser",
         parser_refs=[CodeRef(address="0x0077DF20", role="parser")],
-        runtime_refs=[],
-        notes="+0x00 length, +0x04 fade, cShakeLengthCommand::Parse",
+        runtime_refs=[
+            CodeRef(address="0x00507A20", role="consumer"),
+            CodeRef(address="0x00505626", role="consumer"),
+        ],
+        notes="+0x00 length normalizes curve time; +0x04 fade selects the early-stop tail",
     ),
     CommandBinding(
         id="shake.amplitude",
@@ -807,8 +829,8 @@ CATALOG: List[CommandBinding] = [
         conflicts=[],
         evidence="parser",
         parser_refs=[CodeRef(address="0x00788AA0", role="parser")],
-        runtime_refs=[],
-        notes="+0x08 vector, amplitude values, cShakeAmplitudeCommand::Parse",
+        runtime_refs=[CodeRef(address="0x00507A20", role="consumer")],
+        notes="+0x08 amplitude curve, sampled at elapsed/length for displacement magnitude",
     ),
     CommandBinding(
         id="shake.frequency",
@@ -823,8 +845,8 @@ CATALOG: List[CommandBinding] = [
         conflicts=[],
         evidence="parser",
         parser_refs=[CodeRef(address="0x00788B30", role="parser")],
-        runtime_refs=[],
-        notes="+0x14 vector, frequency values, cShakeFrequencyCommand::Parse",
+        runtime_refs=[CodeRef(address="0x00507A20", role="consumer")],
+        notes="+0x14 frequency curve, sampled at elapsed/length to advance table phase",
     ),
     CommandBinding(
         id="shake.aspect",
@@ -839,8 +861,8 @@ CATALOG: List[CommandBinding] = [
         conflicts=[],
         evidence="parser",
         parser_refs=[CodeRef(address="0x0077E008", role="parser")],
-        runtime_refs=[],
-        notes="+0x20, aspect, cShakeAspectCommand::Parse",
+        runtime_refs=[CodeRef(address="0x00507A20", role="consumer")],
+        notes="+0x20 aspect; runtime scales X by 1/aspect and Y by aspect",
     ),
     CommandBinding(
         id="shake.baseTable",
@@ -855,8 +877,8 @@ CATALOG: List[CommandBinding] = [
         conflicts=[],
         evidence="parser",
         parser_refs=[CodeRef(address="0x0077E07E", role="parser")],
-        runtime_refs=[],
-        notes="+0x24, baseTable enum, parsed through executable kShakeBaseTableTypes table, cShakeBaseTableCommand::Parse",
+        runtime_refs=[CodeRef(address="0x00507A20", role="consumer")],
+        notes="+0x24 baseTable: 0=random, 1=sineY; selects the 64-entry displacement table",
     ),
     CommandBinding(
         id="light.color",
@@ -877,8 +899,14 @@ CATALOG: List[CommandBinding] = [
         conflicts=[],
         evidence="parser",
         parser_refs=[CodeRef(address="0x00789148", role="parser")],
-        runtime_refs=[],
-        notes="+0x00 vector, color values, variable-length vector not a fixed-size scalar, cLightColorCommand::Parse",
+        runtime_refs=[
+            CodeRef(address="0x00404884", role="consumer"),
+            CodeRef(address="0x00404924", role="consumer"),
+        ],
+        notes=(
+            "+0x00 variable-length color curve; tint and flash independently "
+            "sample it at elapsed/length"
+        ),
     ),
     CommandBinding(
         id="light.strength",
@@ -893,8 +921,15 @@ CATALOG: List[CommandBinding] = [
         conflicts=[],
         evidence="parser",
         parser_refs=[CodeRef(address="0x00788C86", role="parser")],
-        runtime_refs=[],
-        notes="+0x0c vector, strength values, variable-length float curve, cLightStrengthCommand::Parse",
+        runtime_refs=[
+            CodeRef(address="0x00404884", role="consumer"),
+            CodeRef(address="0x00404924", role="consumer"),
+        ],
+        notes=(
+            "+0x0c variable-length strength curve; tint passes the sampled "
+            "value to the lighting manager; flash uses positive values as "
+            "clamped alpha and negative values as subtractive alpha"
+        ),
     ),
     CommandBinding(
         id="light.length",
@@ -909,8 +944,15 @@ CATALOG: List[CommandBinding] = [
         conflicts=[],
         evidence="parser",
         parser_refs=[CodeRef(address="0x0077DB2A", role="parser")],
-        runtime_refs=[],
-        notes="+0x18, length, cLightLengthCommand::Parse",
+        runtime_refs=[
+            CodeRef(address="0x00404884", role="consumer"),
+            CodeRef(address="0x00404924", role="consumer"),
+        ],
+        notes=(
+            "+0x18 duration and tint/flash curve time normalization; tint "
+            "resets and flash expires at completion; textual -fade writes "
+            "the shake workspace and is not light wire data"
+        ),
     ),
     CommandBinding(
         id="dynamic_particle.effectBase",
@@ -925,8 +967,11 @@ CATALOG: List[CommandBinding] = [
         conflicts=[],
         evidence="parser",
         parser_refs=[CodeRef(address="0x0078A0AC", role="parser")],
-        runtime_refs=[],
-        notes="+0x0c base descriptor name, cDynamicParticleEffectBaseCommand::Parse",
+        runtime_refs=[
+            CodeRef(address="0x004B91A8", role="consumer"),
+            CodeRef(address="0x004BA6B0", role="consumer"),
+        ],
+        notes="+0x0c base name; runtime derives an optional %s_collide child effect",
     ),
     CommandBinding(
         id="dynamic_particle.model",
@@ -941,8 +986,8 @@ CATALOG: List[CommandBinding] = [
         conflicts=[],
         evidence="parser",
         parser_refs=[CodeRef(address="0x00789E54", role="parser")],
-        runtime_refs=[],
-        notes="one model uses +0x28; multiple models use vector +0x2c",
+        runtime_refs=[CodeRef(address="0x004B91A8", role="consumer")],
+        notes="one model uses +0x28; runtime uniformly chooses from vector +0x2c when nonempty",
     ),
     CommandBinding(
         id="dynamic_particle.mass",
@@ -957,8 +1002,8 @@ CATALOG: List[CommandBinding] = [
         conflicts=[],
         evidence="parser",
         parser_refs=[CodeRef(address="0x00789DA6", role="parser")],
-        runtime_refs=[],
-        notes="+0x10 mass; constructor 0x004B89B2 defaults it to 1.0",
+        runtime_refs=[CodeRef(address="0x004BA6B0", role="consumer")],
+        notes="+0x10 mass; runtime stores reciprocal mass, or 1e6 when mass <= 0",
     ),
     CommandBinding(
         id="dynamic_particle.friction",
@@ -973,8 +1018,8 @@ CATALOG: List[CommandBinding] = [
         conflicts=[],
         evidence="parser",
         parser_refs=[CodeRef(address="0x00789C74", role="parser")],
-        runtime_refs=[],
-        notes="+0x18/+0x1c range; optional -angular writes +0x20",
+        runtime_refs=[CodeRef(address="0x004BA6B0", role="consumer")],
+        notes="+0x18/+0x1c range and optional +0x20 angular copy into rigid-body physics",
     ),
     CommandBinding(
         id="effect.viewRelative",

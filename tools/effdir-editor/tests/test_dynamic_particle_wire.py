@@ -67,3 +67,6 @@ def test_dynamic_particle_parser_semantics_are_exposed_as_bindings():
     assert [binding.id for binding in find_bindings("DynamicParticleDescriptor", "friction_min")] == [
         "dynamic_particle.friction"
     ]
+    assert find_bindings("DynamicParticleDescriptor", "flags") == []
+    assert find_bindings("DynamicParticleDescriptor", "value_14") == []
+    assert find_bindings("DynamicParticleDescriptor", "value_24") == []

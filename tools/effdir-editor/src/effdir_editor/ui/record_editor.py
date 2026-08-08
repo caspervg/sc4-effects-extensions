@@ -19,6 +19,7 @@ from ..editor import nodes as _nodes
 from ..editor import paths as _paths
 from ..editor.references import ReferenceIndex, build_reference_index
 from ..editor.session import EditorSession
+from ..model.decal import DecalDescriptor, effective_flags, effective_repeat_mode
 from ..wire import Bounds2, Bounds3, Raw, Vec2, Vec3, WireString, WireVector
 
 _KEY_LABEL_SUBSTRINGS = ("key", "_id")
@@ -30,8 +31,11 @@ _FIELD_LABELS = {
     ("ParticleDescriptor", "value_164"): "value_164 (unused?)",
     ("ParticleDescriptor", "value_166"): "value_166 (unused?)",
     ("ParticleDescriptor", "value_168"): "value_168 (unused?)",
-    ("DynamicParticleDescriptor", "value_14"): "value_14 (unused?)",
-    ("DynamicParticleDescriptor", "value_24"): "value_24 (unused?)",
+    ("DynamicParticleDescriptor", "flags"): "flags (unused in shipped runtime)",
+    ("DynamicParticleDescriptor", "value_14"): "unused_14 (stored float)",
+    ("DynamicParticleDescriptor", "value_24"): "unused_24 (stored float)",
+    ("DecalDescriptor", "flags"): "flags (stored)",
+    ("DecalDescriptor", "repeat_mode"): "repeat_mode (stored)",
     ("ScrubberDescription", "value_10"): "value_10 (unused?)",
     ("EventRecord", "name"): "definition_name",
     ("EventRecord", "time"): "epicenter_radius (flash only)",
@@ -57,6 +61,34 @@ _ENUM_FIELDS = {
     ("AttractorDescription", "selector"): (
         ["Attractor / generator", "Occupant group"],
         [0, 1],
+    ),
+    ("ShakeDescriptor", "base_table"): (
+        ["Random (two-axis)", "Sine Y (vertical)"],
+        [0, 1],
+    ),
+}
+
+_FIELD_HELP = {
+    ("DynamicParticleDescriptor", "flags"): (
+        "preserved bitset with no registered text setter or runtime read in "
+        "the paired shipped Mac/Windows implementations; all vanilla records store zero"
+    ),
+    ("DynamicParticleDescriptor", "value_14"): (
+        "preserved float at object offset +0x14; initialized and stored as "
+        "zero in every vanilla record, with no text setter or runtime read "
+        "in the paired shipped builds"
+    ),
+    ("DynamicParticleDescriptor", "value_24"): (
+        "preserved float at object offset +0x24; initialized and stored as "
+        "zero in every vanilla record, with no text setter or runtime read "
+        "in the paired shipped builds"
+    ),
+    ("DecalDescriptor", "flags"): (
+        "stored bitset; when repeat_mode is stored as 0 the game derives "
+        "the static bit (bit 6) without changing this wire value"
+    ),
+    ("DecalDescriptor", "repeat_mode"): (
+        "stored wire byte; the game normalizes stored 0 to effective mode 2"
     ),
 }
 
@@ -197,14 +229,8 @@ class RecordEditor(wx.Panel):
                     self._add_record_children(page, prop, child_path)
                 if node.raw is not None and node.raw.wire_type.startswith("bitset<"):
                     self._add_bitset_children(page, prop, child_path, node.raw.wire_type, int(node.value))
-            help_bits = [f"evidence: {node.summary.evidence}"]
-            if node.summary.label:
-                help_bits.insert(0, f"command: {node.summary.label}")
-            if kind == "collection":
-                help_bits.insert(0, "expand to inspect/edit vector elements")
-            elif kind == "record":
-                help_bits.insert(0, "expand to inspect/edit nested fields")
-            page.SetPropertyHelpString(prop, "; ".join(help_bits))
+            page.SetPropertyHelpString(prop, self._property_help(node, child_path, kind))
+            self._set_semantic_preview(prop, child_path)
             # Zebra-strip top-level properties, and let expandable children
             # inherit the exact same tint as their parent block.
             self.grid.SetPropertyBackgroundColour(prop, self._property_group_colour(group_index))
@@ -261,6 +287,8 @@ class RecordEditor(wx.Panel):
             child.SetClientData(property_data)
             self._ui_property_data[child_path] = property_data
             page.AppendIn(parent, child)
+            page.SetPropertyHelpString(child, self._property_help(node, child_path, kind))
+            self._set_semantic_preview(child, child_path)
             if kind == "record":
                 child.ChangeFlag(_PG_READ_ONLY, True)
                 child.SetExpanded(False)
@@ -272,6 +300,68 @@ class RecordEditor(wx.Panel):
         parent_path = _paths.parent_path(path)
         parent_value = _paths.get_path(self._session.working, parent_path) if parent_path else self._session.working
         return type(parent_value).__name__
+
+    def _property_help(self, node: _nodes.Node, path: str, kind: str) -> str:
+        """Build user-facing help from the binding catalog and wire context."""
+
+        parts = []
+        if kind == "collection":
+            parts.append("expand to inspect/edit vector elements")
+        elif kind == "record":
+            parts.append("expand to inspect/edit nested fields")
+
+        commands = list(dict.fromkeys(binding.command_path for binding in node.bindings))
+        if commands:
+            parts.append(f"command: {', '.join(commands)}")
+        parts.append(f"evidence: {node.summary.evidence}")
+
+        tokens = _paths.tokenize(path)
+        attr_name = tokens[-1] if tokens and isinstance(tokens[-1], str) else None
+        record_type = self._parent_record_type(path)
+        field_help = _FIELD_HELP.get((record_type, attr_name)) if attr_name else None
+        if field_help:
+            parts.append(field_help)
+
+        for note in dict.fromkeys(binding.notes for binding in node.bindings if binding.notes):
+            parts.append(note)
+        transforms = list(
+            dict.fromkeys(
+                transform.description
+                for binding in node.bindings
+                for transform in binding.transforms
+            )
+        )
+        if transforms:
+            parts.append(f"transform: {', '.join(transforms)}")
+        runtime_refs = list(
+            dict.fromkeys(
+                ref.address
+                for binding in node.bindings
+                for ref in binding.runtime_refs
+            )
+        )
+        if runtime_refs:
+            parts.append(f"runtime: {', '.join(runtime_refs)}")
+        return "; ".join(parts)
+
+    def _semantic_preview(self, path: str) -> Optional[str]:
+        tokens = _paths.tokenize(path)
+        if not tokens or not isinstance(tokens[-1], str):
+            return None
+        record_path = _paths.parent_path(path)
+        record = _paths.get_path(self._session.working, record_path)
+        if not isinstance(record, DecalDescriptor):
+            return None
+        if tokens[-1] == "repeat_mode":
+            return f"effective {effective_repeat_mode(record)}"
+        if tokens[-1] == "flags":
+            return f"effective {self._format_hex(effective_flags(record))}"
+        return None
+
+    def _set_semantic_preview(self, prop: wxpg.PGProperty, path: str) -> None:
+        preview = self._semantic_preview(path)
+        if preview is not None:
+            self.grid.SetPropertyCell(prop, 2, preview)
 
     def _make_property(
         self,
@@ -386,6 +476,8 @@ class RecordEditor(wx.Panel):
             page.Append(prop)
         else:
             page.AppendIn(parent, prop)
+        vector_node = api.get_node(self._session, path, reference_index=self._reference_index)
+        page.SetPropertyHelpString(prop, self._property_help(vector_node, path, "collection"))
         prop.ChangeFlag(_PG_READ_ONLY, True)
         for index, item in enumerate(vector.items):
             child_path = f"{path}[{index}]"
@@ -556,6 +648,7 @@ class RecordEditor(wx.Panel):
             new_value = current.value | (1 << bit) if bool(prop.GetValue()) else current.value & ~(1 << bit)
             api.set_raw(self._session, path, new_value)
             self._refresh_bitset_properties(path)
+            self._refresh_semantic_previews(path)
             self._on_change(path)
             return
         path = client_data[1] if isinstance(client_data, tuple) and client_data and client_data[0] == "path" else prop.GetName()
@@ -582,6 +675,7 @@ class RecordEditor(wx.Panel):
 
         api.set_raw(self._session, path, new_value)
         self._refresh_vector_summary(path)
+        self._refresh_semantic_previews(path)
         self._on_change(path)
 
     def _refresh_bitset_properties(self, path: str) -> None:
@@ -592,6 +686,19 @@ class RecordEditor(wx.Panel):
         parent = self._bit_parent_properties.get(path)
         if parent is not None:
             parent.SetValue(self._format_hex(value))
+
+    def _refresh_semantic_previews(self, changed_path: str) -> None:
+        """Refresh both derived decal cells when either source field changes."""
+
+        record_path = _paths.parent_path(changed_path)
+        record = _paths.get_path(self._session.working, record_path)
+        if not isinstance(record, DecalDescriptor):
+            return
+        for attr_name in ("flags", "repeat_mode"):
+            path = f"{record_path}.{attr_name}"
+            prop = self.grid.GetPropertyByName(path)
+            if prop is not None:
+                self._set_semantic_preview(prop, path)
 
     def _refresh_vector_summary(self, path: str) -> None:
         """Keep an expanded vector's parent preview current after an edit."""
@@ -678,6 +785,14 @@ class RecordEditor(wx.Panel):
         bits.append(f"evidence: {node.summary.evidence}")
         if node.summary.label:
             bits.append(f"binding: {node.summary.label}")
+        runtime_refs = list(
+            dict.fromkeys(ref.address for binding in node.bindings for ref in binding.runtime_refs)
+        )
+        if runtime_refs:
+            bits.append(f"runtime: {', '.join(runtime_refs)}")
+        notes = list(dict.fromkeys(binding.notes for binding in node.bindings if binding.notes))
+        if notes:
+            bits.append(notes[0])
         self.detail.SetLabel(f"{path}   —   " + "   ·   ".join(bits))
 
     def _property_data(self, prop: wxpg.PGProperty):

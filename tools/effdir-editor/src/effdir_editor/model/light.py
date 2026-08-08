@@ -5,7 +5,10 @@ Wire order (effdir.md, "Shake and light"):
 
 Member names from the light parser cross-reference (effdir.md, "Light
 descriptor"): `color` vector (+0x00), `strength` vector (+0x0c), `length`
-(+0x18).
+(+0x18). Tint and flash consumers independently sample both curves at
+elapsed/length (Mac 0x00404884 and 0x00404924; Windows 0x0058EC40 and
+0x0058E870). The textual `length -fade` option writes outside this descriptor
+and is not light wire data.
 """
 
 from __future__ import annotations

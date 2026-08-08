@@ -14,8 +14,10 @@ the model resource key fields precede all six floats on the wire.
 Member names from the dynamic-particle parser cross-reference (effdir.md,
 "Major-4 dynamic-particle descriptor"): `base_name` (+0x0c), `mass`
 (+0x10), `friction_min`/`friction_max` (+0x18/+0x1c), `angular_friction`
-(+0x20), `model_key` (+0x28), `model_keys` vector (+0x2c). `+0x08` flags
-and `+0x14/+0x24` have no traced parser setter or runtime consumer. All three vanilla dynamic-particle
+(+0x20), `model_key` (+0x28), `model_keys` vector (+0x2c). Runtime Start
+(0x004BA6B0) stores reciprocal mass and copies the three friction values into
+rigid-body physics. `+0x08` flags and `+0x14/+0x24` have no traced parser
+setter or runtime consumer. All three vanilla dynamic-particle
 descriptors also store zero in the flags word. It remains `flags` because
 its bitset wire type is established, but bits 0-6 deliberately keep generic
 editor labels: the evidence supports "preserved and currently unconsumed",
