@@ -71,12 +71,12 @@ jobs:
             echo "Comparing $previous_tag..${GITHUB_REF_NAME}"
             while IFS= read -r path; do
               case "$path" in
-                CMakeLists.txt|CMakePresets.json|vcpkg.json|.gitmodules|README.md|src/*|cmake/*|dist/*|vendor/*)
+                CMakeLists.txt|CMakePresets.json|vcpkg.json|.gitmodules|README.md|LICENSE|THIRD_PARTY_NOTICES.md|src/*|cmake/*|dist/*|vendor/*)
                   dll=true
                   ;;
               esac
               case "$path" in
-                tools/effdir-editor/*)
+                LICENSE|THIRD_PARTY_NOTICES.md|tools/effdir-editor/*)
                   editor=true
                   ;;
               esac
@@ -189,6 +189,9 @@ jobs:
           Copy-Item "cmake-build-release-visual-studio/src/dll/Release/SC4EffectsExtensions.dll" -Destination $packageDir
           Copy-Item "dist/SC4EffectsExtensions.ini" -Destination $packageDir
           Copy-Item "README.md" -Destination $packageDir
+          Copy-Item "LICENSE" -Destination $packageDir
+          Copy-Item "vendor/gzcom-dll/LICENSE" -Destination (Join-Path $packageDir "LICENSE-gzcom-dll")
+          Copy-Item "THIRD_PARTY_NOTICES.md" -Destination $packageDir
 
           $archivePath = Join-Path "${{ github.workspace }}" ("SC4EffectsExtensions-" + $tag + "-win32.zip")
           Compress-Archive -Path (Join-Path $packageDir '*') -DestinationPath $archivePath
@@ -263,14 +266,16 @@ jobs:
       - name: Build executable
         run: uv run --python 3.12 pyinstaller --clean --noconfirm EFFDIR-Editor.spec
 
-      - name: Bundle README and SBOM (Windows)
+      - name: Bundle documentation (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: Copy-Item README.md, "${{ matrix.platform.sbom }}" dist/EFFDIR-Editor/
+        run: |
+          Copy-Item README.md, "${{ matrix.platform.sbom }}", ../../LICENSE, ../../THIRD_PARTY_NOTICES.md dist/EFFDIR-Editor/
 
-      - name: Bundle README and SBOM (macOS)
+      - name: Bundle documentation (macOS)
         if: runner.os == 'macOS'
-        run: cp README.md "${{ matrix.platform.sbom }}" dist/EFFDIR-Editor.app/Contents/Resources/
+        run: |
+          cp README.md "${{ matrix.platform.sbom }}" ../../LICENSE ../../THIRD_PARTY_NOTICES.md dist/EFFDIR-Editor.app/Contents/Resources/
 
       - name: Ad-hoc sign macOS bundle
         if: runner.os == 'macOS'

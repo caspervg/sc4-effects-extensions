@@ -134,3 +134,17 @@ vendor/              gzcom-dll, sc4-render-services, text editor, and vcpkg
 ```
 
 CI builds Debug and Release Win32 DLLs and runs the editor test suite. Tags matching `vMAJOR.MINOR.PATCH` publish whichever plugin and editor components changed since the previous release.
+
+## License
+
+Copyright (C) 2026 Casper Van Gheluwe.
+
+The original code and documentation in this repository are licensed under the
+[GNU General Public License v3 or later](LICENSE). The DLL incorporates
+LGPL-2.1-or-later `gzcom-dll` sources under the GPL conversion permitted by that
+license. Release tags provide the corresponding source needed to rebuild the
+DLL.
+
+See [Third-party notices](THIRD_PARTY_NOTICES.md) for dependency copyrights and
+licenses. SimCity 4 and related names and assets remain the property of their
+respective owners.
