@@ -23,3 +23,13 @@
 *.dll
 **/dist/**
 **/build/**
+
+# Python-generated files
+__pycache__/
+*.py[cod]
+*.pyd
+*$py.class
+
+# IntelliJ IDEA / CLion
+*.iml
+.idea/
