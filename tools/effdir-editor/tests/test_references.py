@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from effdir_editor.editor.references import build_reference_index
+from effdir_editor.editor.references import Reference, build_reference_index, reference_info
 
 
 def _value(value):
@@ -13,6 +13,21 @@ def _name(value):
 
 def _vector(*items):
     return SimpleNamespace(items=list(items))
+
+
+def test_reference_info_does_not_repeat_effect_description_path():
+    reference = Reference(
+        path="effect_descriptions[61].descriptions[0]",
+        label=(
+            'effect_descriptions[61] "plopmode_education_plop" '
+            'description[0] "education_coverage_circle_plop_collapse_normal" (component)'
+        ),
+    )
+
+    assert reference_info(reference) == (
+        'effect "plopmode_education_plop" · description '
+        '"education_coverage_circle_plop_collapse_normal" (component)'
+    )
 
 
 def test_event_descriptor_indices_create_component_backlinks():
@@ -37,6 +52,9 @@ def test_event_descriptor_indices_create_component_backlinks():
 
     assert [ref.path for ref in index.path_backlinks["shakes[1]"]] == [
         "effect_descriptions[0].events[0]"
+    ]
+    assert [ref.path for ref in index.outgoing["effect_descriptions[0].events[0]"]] == [
+        "shakes[1]"
     ]
     assert [ref.path for ref in index.path_backlinks["lights[0]"]] == [
         "effect_descriptions[0].events[1]",
@@ -97,3 +115,10 @@ def test_description_records_link_to_verified_component_collections():
     reference = index.path_backlinks["particles[1]"][0]
     assert reference.path == "effect_descriptions[0].descriptions[0]"
     assert "particle" in reference.label
+    outgoing = index.outgoing["effect_descriptions[0].descriptions[0]"][0]
+    assert outgoing.path == "particles[1]"
+    assert outgoing.kind == "Component"
+    owner_outgoing = index.outgoing["effect_descriptions[0]"][0]
+    assert owner_outgoing.path == "particles[1]"
+    assert owner_outgoing.kind == "Component"
+    assert "description[0]" in owner_outgoing.label

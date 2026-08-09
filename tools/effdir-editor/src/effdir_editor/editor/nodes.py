@@ -95,6 +95,7 @@ class Node:
     raw: Optional[RawValue]
     bindings: List[CommandBinding]
     referenced_by: List[Reference] = field(default_factory=list)
+    references: List[Reference] = field(default_factory=list)
 
 
 def classify(value: Any) -> str:
@@ -173,6 +174,9 @@ def build_node(
     referenced_by: List[Reference] = (
         list(reference_index.path_backlinks.get(path, [])) if reference_index else []
     )
+    references: List[Reference] = (
+        list(reference_index.outgoing.get(path, [])) if reference_index else []
+    )
     if (
         reference_index
         and is_dataclass(value)
@@ -219,4 +223,11 @@ def build_node(
         reference_count=len(referenced_by),
         display_name=display_name,
     )
-    return Node(summary=summary, value=plain_value, raw=raw_value, bindings=bindings, referenced_by=referenced_by)
+    return Node(
+        summary=summary,
+        value=plain_value,
+        raw=raw_value,
+        bindings=bindings,
+        referenced_by=referenced_by,
+        references=references,
+    )

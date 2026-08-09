@@ -15,12 +15,19 @@ import wx.propgrid as wxpg
 
 from ..bindings.bitfields import named_bits
 from ..editor import api
+from ..editor.curves import curve_info
 from ..editor import nodes as _nodes
 from ..editor import paths as _paths
-from ..editor.references import ReferenceIndex, build_reference_index
+from ..editor.references import (
+    ReferenceIndex,
+    build_reference_index,
+    reference_info,
+    reference_kind,
+)
 from ..editor.session import EditorSession
 from ..model.decal import DecalDescriptor, effective_flags, effective_repeat_mode
 from ..wire import Bounds2, Bounds3, Raw, Vec2, Vec3, WireString, WireVector
+from .curve_view import edit_curve_dialog
 
 _KEY_LABEL_SUBSTRINGS = ("key", "_id")
 
@@ -139,40 +146,105 @@ class RecordEditor(wx.Panel):
         self._on_change = on_change
         self._on_navigate = on_navigate
         self._references: list = []
+        self._outgoing_references: list = []
+        self._reference_rows: list = []
         self._reference_index: Optional[ReferenceIndex] = None
         self._bit_parent_properties: dict[str, wxpg.PGProperty] = {}
         self._color_preview_properties: dict[str, wxpg.PGProperty] = {}
         self._ui_property_data: dict[str, tuple] = {}
 
+        self.reference_splitter = wx.SplitterWindow(self, style=wx.SP_LIVE_UPDATE)
+        self.editor_panel = wx.Panel(self.reference_splitter)
+        self.references_panel = wx.Panel(self.reference_splitter)
+        self.reference_splitter.SetMinimumPaneSize(self.FromDIP(96))
+
+        self.header = wx.Panel(self.editor_panel)
+        self.header.SetBackgroundColour(wx.SystemSettings.GetColour(wx.SYS_COLOUR_BTNFACE))
+        self.record_title = wx.StaticText(self.header, label="Select a record")
+        title_font = self.record_title.GetFont()
+        title_font.SetWeight(wx.FONTWEIGHT_BOLD)
+        self.record_title.SetFont(title_font)
+        self.record_meta = wx.StaticText(self.header, label="")
+        self.record_meta.SetFont(self.record_meta.GetFont().Smaller())
+        self.record_status = wx.StaticText(self.header, label="Ready")
+        self.record_status.SetFont(self.record_status.GetFont().Smaller())
+        header_layout = wx.BoxSizer(wx.HORIZONTAL)
+        header_text = wx.BoxSizer(wx.VERTICAL)
+        header_text.Add(self.record_title, 0, wx.EXPAND)
+        header_text.Add(self.record_meta, 0, wx.EXPAND | wx.TOP, self.FromDIP(2))
+        header_layout.Add(header_text, 1, wx.EXPAND)
+        header_layout.Add(self.record_status, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, self.FromDIP(8))
+        self.header.SetSizer(header_layout)
+
+        self.field_filter = wx.SearchCtrl(self.editor_panel, style=wx.TE_PROCESS_ENTER)
+        self.field_filter.SetDescriptiveText("Filter fields by name or path")
+        self.field_filter.ShowCancelButton(True)
+        self.filter_status = wx.StaticText(self.editor_panel, label="")
+        self.filter_status.SetFont(self.filter_status.GetFont().Smaller())
+
         self.grid = wxpg.PropertyGridManager(
-            self, style=wxpg.PG_SPLITTER_AUTO_CENTER | wxpg.PGMAN_DEFAULT_STYLE
+            self.editor_panel,
+            style=wxpg.PG_SPLITTER_AUTO_CENTER | wxpg.PGMAN_DEFAULT_STYLE | wxpg.PG_TOOLTIPS,
         )
         self.grid.AddPage("Fields")
         self.grid.SetColumnCount(3)
         self.grid.SetColumnTitle(0, "Field")
         self.grid.SetColumnTitle(1, "Value")
-        self.grid.SetColumnTitle(2, "Preview")
-        self.grid.SetColumnProportion(0, 48)
-        self.grid.SetColumnProportion(1, 37)
-        self.grid.SetColumnProportion(2, 15)
-        self.detail = wx.StaticText(self, label=" ")
+        self.grid.SetColumnTitle(2, "Info")
+        self.grid.SetColumnProportion(0, 44)
+        self.grid.SetColumnProportion(1, 36)
+        self.grid.SetColumnProportion(2, 20)
+        # wx requires PG_SPLITTER_AUTO_CENTER while proportions are set. Keep
+        # the initial proportions, then disable the resize behaviour that
+        # would otherwise move the splitter back to the centre.
+        self.grid.SetWindowStyleFlag(
+            self.grid.GetWindowStyleFlag() & ~wxpg.PG_SPLITTER_AUTO_CENTER
+        )
+        self.detail = wx.StaticText(self.editor_panel, label=" ")
         self.detail.SetFont(self.detail.GetFont().Smaller())
 
-        self.references_label = wx.StaticText(self, label="Referenced by:")
-        self.references_list = wx.ListBox(self, style=wx.LB_SINGLE)
+        self.references_label = wx.StaticText(self.references_panel, label="References · 0 in · 0 out")
+        reference_font = self.references_label.GetFont()
+        reference_font.SetWeight(wx.FONTWEIGHT_BOLD)
+        self.references_label.SetFont(reference_font)
+        self.references_list = wx.ListCtrl(
+            self.references_panel,
+            style=wx.LC_REPORT | wx.LC_SINGLE_SEL | wx.LC_HRULES | wx.LC_VRULES,
+        )
+        self.references_list.InsertColumn(0, "Direction", width=self.FromDIP(72))
+        self.references_list.InsertColumn(1, "Kind", width=self.FromDIP(120))
+        self.references_list.InsertColumn(2, "Path", width=self.FromDIP(300))
+        self.references_list.InsertColumn(3, "Info", width=self.FromDIP(520))
+        self.references_list.SetMinSize(self.FromDIP((-1, 96)))
 
-        sizer = wx.BoxSizer(wx.VERTICAL)
-        sizer.Add(self.grid, 1, wx.EXPAND)
-        sizer.Add(self.detail, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, self.FromDIP(6))
-        sizer.Add(self.references_label, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, self.FromDIP(6))
-        sizer.Add(self.references_list, 0, wx.EXPAND | wx.ALL, self.FromDIP(6))
-        self.SetSizer(sizer)
+        editor_sizer = wx.BoxSizer(wx.VERTICAL)
+        editor_sizer.Add(self.header, 0, wx.EXPAND | wx.ALL, self.FromDIP(6))
+        filter_row = wx.BoxSizer(wx.HORIZONTAL)
+        filter_row.Add(self.field_filter, 1, wx.EXPAND)
+        filter_row.Add(self.filter_status, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, self.FromDIP(8))
+        editor_sizer.Add(filter_row, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, self.FromDIP(6))
+        editor_sizer.Add(self.grid, 1, wx.EXPAND)
+        editor_sizer.Add(self.detail, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, self.FromDIP(6))
+        self.editor_panel.SetSizer(editor_sizer)
+
+        references_sizer = wx.BoxSizer(wx.VERTICAL)
+        references_sizer.Add(self.references_label, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, self.FromDIP(6))
+        references_sizer.Add(self.references_list, 1, wx.EXPAND | wx.ALL, self.FromDIP(6))
+        self.references_panel.SetSizer(references_sizer)
+
+        root_sizer = wx.BoxSizer(wx.VERTICAL)
+        root_sizer.Add(self.reference_splitter, 1, wx.EXPAND)
+        self.SetSizer(root_sizer)
         self._show_references(False)
 
         self.grid.Bind(wxpg.EVT_PG_CHANGED, self._on_prop_changed)
         self.grid.Bind(wxpg.EVT_PG_SELECTED, self._on_prop_selected)
         self.grid.GetGrid().Bind(wx.EVT_LEFT_DCLICK, self._on_grid_double_click)
-        self.references_list.Bind(wx.EVT_LISTBOX_DCLICK, self._on_reference_activated)
+        self.field_filter.Bind(wx.EVT_TEXT, self._on_field_filter)
+        self.field_filter.Bind(wx.EVT_SEARCHCTRL_CANCEL_BTN, self._on_field_filter_cancel)
+        self.references_list.Bind(wx.EVT_LIST_ITEM_ACTIVATED, self._on_reference_activated)
+        self.references_list.Bind(wx.EVT_CONTEXT_MENU, self._on_reference_context)
+        self.references_list.Bind(wx.EVT_SIZE, self._on_references_size)
 
     def show_record(self, session: EditorSession, path: Optional[str]) -> None:
         if path and isinstance(_paths.get_path(session.working, path), WireVector):
@@ -187,19 +259,20 @@ class RecordEditor(wx.Panel):
         self._color_preview_properties.clear()
         self._ui_property_data.clear()
         self.detail.SetLabel(" ")
+        self._reset_field_filter()
         if not path or session is None:
             self.grid.RefreshGrid()
             self._show_references(False)
+            self._set_record_header(None, None)
             return
 
         self._reference_index = build_reference_index(session.working)
         record_node = api.get_node(session, path, reference_index=self._reference_index)
         self._references = record_node.referenced_by
-        if self._references:
-            self.references_list.Set([r.label for r in self._references])
-            self._show_references(True)
-        else:
-            self._show_references(False)
+        self._outgoing_references = record_node.references
+        self._set_reference_rows(self._references, self._outgoing_references)
+        self._show_references(True)
+        self._set_record_header(record_node, path)
 
         group_index = 0
         for child_path in _nodes.child_paths(session.working, path):
@@ -217,6 +290,7 @@ class RecordEditor(wx.Panel):
                 prop = self._make_property(label, child_path, kind, node)
             if prop is None:
                 continue
+            self._register_property(prop, child_path)
             if kind == "collection":
                 # _make_vector_property owns insertion because it also adds
                 # the vector's expandable element rows.
@@ -239,6 +313,7 @@ class RecordEditor(wx.Panel):
         # above overwrites custom descendant cell backgrounds. Apply swatches
         # last, after all top-level block colours are final.
         self._refresh_color_previews()
+        self._apply_field_filter()
         self.grid.RefreshGrid()
 
     def show_collection(self, session: EditorSession, path: str) -> None:
@@ -246,13 +321,16 @@ class RecordEditor(wx.Panel):
         self._record_path = path
         self._reference_index = None
         self._references = []
+        self._outgoing_references = []
         page = self.grid.GetPage(0)
         page.Clear()
         self._bit_parent_properties.clear()
         self._color_preview_properties.clear()
         self._ui_property_data.clear()
-        self.references_list.Clear()
+        self._reset_field_filter()
+        self._set_reference_rows([], [])
         self._show_references(False)
+        self._set_record_header(None, path)
 
         collection = _paths.get_path(session.working, path)
         count = len(collection.items) if isinstance(collection, WireVector) else 0
@@ -264,6 +342,7 @@ class RecordEditor(wx.Panel):
         page.Append(prop)
         page.SetPropertyHelpString(prop, "Select an individual entry in the tree to inspect or edit it")
         self.detail.SetLabel(f"{path}   —   collection with {count} items")
+        self._apply_field_filter()
         self.grid.RefreshGrid()
 
     def _add_record_children(self, page, parent, path: str) -> None:
@@ -307,6 +386,8 @@ class RecordEditor(wx.Panel):
         parts = []
         if kind == "collection":
             parts.append("expand to inspect/edit vector elements")
+            if curve_info(node) is not None:
+                parts.append("double-click to open the curve editor")
         elif kind == "record":
             parts.append("expand to inspect/edit nested fields")
 
@@ -441,14 +522,15 @@ class RecordEditor(wx.Panel):
             checkbox.SetClientData(property_data)
             self._ui_property_data[bit_name] = property_data
             page.AppendIn(parent, checkbox)
-        unnamed_mask = value & ~sum(1 << bit for bit in labels)
-        unnamed_name = f"{path}.__unnamed_bits"
-        unnamed = wxpg.StringProperty("unnamed bits", unnamed_name, self._format_hex(unnamed_mask))
-        unnamed.ChangeFlag(_PG_READ_ONLY, True)
-        property_data = ("path", path)
-        unnamed.SetClientData(property_data)
-        self._ui_property_data[unnamed_name] = property_data
-        page.AppendIn(parent, unnamed)
+        if len(labels) < bit_count:
+            unnamed_mask = value & ~sum(1 << bit for bit in labels)
+            unnamed_name = f"{path}.__unnamed_bits"
+            unnamed = wxpg.StringProperty("unnamed bits", unnamed_name, self._format_hex(unnamed_mask))
+            unnamed.ChangeFlag(_PG_READ_ONLY, True)
+            property_data = ("path", path)
+            unnamed.SetClientData(property_data)
+            self._ui_property_data[unnamed_name] = property_data
+            page.AppendIn(parent, unnamed)
 
     def _make_vector_property(
         self,
@@ -478,6 +560,8 @@ class RecordEditor(wx.Panel):
             page.AppendIn(parent, prop)
         vector_node = api.get_node(self._session, path, reference_index=self._reference_index)
         page.SetPropertyHelpString(prop, self._property_help(vector_node, path, "collection"))
+        if curve_info(vector_node) is not None:
+            self.grid.SetPropertyCell(prop, 2, "Double-click to edit curve")
         prop.ChangeFlag(_PG_READ_ONLY, True)
         for index, item in enumerate(vector.items):
             child_path = f"{path}[{index}]"
@@ -649,6 +733,7 @@ class RecordEditor(wx.Panel):
             api.set_raw(self._session, path, new_value)
             self._refresh_bitset_properties(path)
             self._refresh_semantic_previews(path)
+            self._refresh_record_header()
             self._on_change(path)
             return
         path = client_data[1] if isinstance(client_data, tuple) and client_data and client_data[0] == "path" else prop.GetName()
@@ -676,6 +761,7 @@ class RecordEditor(wx.Panel):
         api.set_raw(self._session, path, new_value)
         self._refresh_vector_summary(path)
         self._refresh_semantic_previews(path)
+        self._refresh_record_header()
         self._on_change(path)
 
     def _refresh_bitset_properties(self, path: str) -> None:
@@ -742,6 +828,22 @@ class RecordEditor(wx.Panel):
         else:
             path = client_data[1]
         current = _paths.get_path(self._session.working, path)
+
+        curve_path = path
+        selected = -1
+        tokens = _paths.tokenize(path)
+        if tokens and isinstance(tokens[-1], int):
+            selected = tokens[-1]
+            curve_path = _paths.parent_path(path)
+        try:
+            curve_node = api.get_node(self._session, curve_path)
+        except (AttributeError, IndexError, KeyError, ValueError):
+            curve_node = None
+        curve = curve_info(curve_node) if curve_node is not None else None
+        if curve is not None:
+            self._open_curve_editor(curve_path, curve, selected)
+            return
+
         if hit.GetColumn() != 2:
             event.Skip()
             return
@@ -766,10 +868,41 @@ class RecordEditor(wx.Panel):
         prop.SetValue(self._format_value(new_value))
         self._set_color_preview_cell(prop, new_value)
         self._refresh_vector_summary(path)
+        self._refresh_record_header()
         # MainFrame's callback refreshes the resource tree and may rebuild the
         # property page. Defer that work until wx has finished dispatching the
         # native double-click event that owns ``prop``.
         wx.CallAfter(self._on_change, path)
+
+    def _open_curve_editor(self, path: str, info, selected: int = -1) -> None:
+        if self._session is None:
+            return
+        vector = _paths.get_path(self._session.working, path)
+        if not isinstance(vector, WireVector):
+            return
+        values = edit_curve_dialog(
+            self,
+            f"Edit curve — {path}",
+            path,
+            info.commands,
+            vector.items,
+            selected=selected,
+        )
+        if values is None or values == list(vector.items):
+            return
+
+        updated = WireVector(count=len(values), items=list(values), source_span=vector.source_span)
+        api.set_raw(self._session, path, updated)
+        parent = self.grid.GetPropertyByName(path)
+        if parent is not None:
+            parent.SetValue(self._format_vector(updated))
+        for index, value in enumerate(values):
+            child = self.grid.GetPropertyByName(self._vector_property_name(path, index))
+            if child is not None:
+                child.SetValue(value)
+        self._refresh_record_header()
+        self.grid.RefreshGrid()
+        self._on_change(path)
 
     def _on_prop_selected(self, event: wxpg.PropertyGridEvent) -> None:
         prop = event.GetProperty()
@@ -801,13 +934,178 @@ class RecordEditor(wx.Panel):
             return client_data
         return self._ui_property_data.get(prop.GetName())
 
+    def _register_property(self, prop: wxpg.PGProperty, path: str) -> None:
+        if prop.GetClientData() is None:
+            prop.SetClientData(("path", path))
+        self._ui_property_data[prop.GetName()] = self._property_data(prop) or ("path", path)
+
+    def _reset_field_filter(self) -> None:
+        self.field_filter.ChangeValue("")
+        self.filter_status.SetLabel("")
+
+    def _on_field_filter(self, _event: wx.CommandEvent) -> None:
+        self._apply_field_filter()
+
+    def _on_field_filter_cancel(self, _event: wx.CommandEvent) -> None:
+        self._reset_field_filter()
+        self._apply_field_filter()
+
+    @staticmethod
+    def _is_path_parent(parent: str, child: str) -> bool:
+        return child == parent or child.startswith(f"{parent}.") or child.startswith(f"{parent}[")
+
+    def _apply_field_filter(self) -> None:
+        page = self.grid.GetPage(0)
+        query = self.field_filter.GetValue().strip().lower()
+        entries = []
+        for property_name, data in self._ui_property_data.items():
+            if not isinstance(data, tuple) or len(data) < 2:
+                continue
+            prop = page.GetPropertyByName(property_name)
+            if prop is None:
+                continue
+            path = data[1]
+            entries.append((property_name, path, prop.GetLabel()))
+        if not entries:
+            self.filter_status.SetLabel("")
+            return
+
+        matching_paths = {
+            path
+            for _, path, label in entries
+            if not query or query in f"{path} {label}".lower()
+        }
+        visible = 0
+        for property_name, path, _label in entries:
+            show = not query or any(self._is_path_parent(path, match) for match in matching_paths)
+            page.HideProperty(property_name, not show)
+            if show:
+                visible += 1
+        if query:
+            self.filter_status.SetLabel(f"{visible} fields")
+        else:
+            self.filter_status.SetLabel(f"{len(entries)} fields")
+        self.grid.RefreshGrid()
+
+    def _set_record_header(self, node: Optional[_nodes.Node], path: Optional[str]) -> None:
+        if path is not None and node is None and self._session is not None:
+            self.record_title.SetLabel("Collection")
+            self.record_meta.SetLabel(f"{path}   ·   collection")
+            self.record_status.SetLabel("Ready")
+            self.record_status.SetForegroundColour(
+                wx.SystemSettings.GetColour(wx.SYS_COLOUR_GRAYTEXT)
+            )
+            self.header.Layout()
+            return
+        if node is None or path is None or self._session is None:
+            self.record_title.SetLabel("Select a record")
+            self.record_meta.SetLabel("")
+            self.record_status.SetLabel("Ready")
+            self.record_status.SetForegroundColour(
+                wx.SystemSettings.GetColour(wx.SYS_COLOUR_GRAYTEXT)
+            )
+            return
+        value = _paths.get_path(self._session.working, path)
+        title = node.summary.display_name or type(value).__name__
+        self.record_title.SetLabel(title)
+        meta = f"{type(value).__name__}   ·   {path}"
+        if node.summary.evidence:
+            meta += f"   ·   {node.summary.evidence}"
+        self.record_meta.SetLabel(meta)
+        modified = self._session.dirty
+        self.record_status.SetLabel("Modified" if modified else "Ready")
+        self.record_status.SetForegroundColour(
+            wx.SystemSettings.GetColour(wx.SYS_COLOUR_HIGHLIGHT)
+            if modified
+            else wx.SystemSettings.GetColour(wx.SYS_COLOUR_GRAYTEXT)
+        )
+        self.header.Layout()
+
+    def _refresh_record_header(self) -> None:
+        if self._session is None or self._record_path is None:
+            return
+        node = api.get_node(self._session, self._record_path, reference_index=self._reference_index)
+        self._set_record_header(node, self._record_path)
+
+    def _set_reference_rows(self, incoming: list, outgoing: list) -> None:
+        rows = [("In", reference) for reference in incoming]
+        rows.extend(("Out", reference) for reference in outgoing)
+        self._reference_rows = sorted(
+            rows,
+            key=lambda row: (0 if row[0] == "In" else 1, reference_kind(row[1]), row[1].path),
+        )
+        self.references_list.DeleteAllItems()
+        self.references_label.SetLabel(
+            f"References · {len(incoming)} in · {len(outgoing)} out"
+        )
+        if not self._reference_rows:
+            row = self.references_list.InsertItem(self.references_list.GetItemCount(), "—")
+            self.references_list.SetItem(row, 3, "No known references")
+            return
+        for direction, reference in self._reference_rows:
+            row = self.references_list.InsertItem(
+                self.references_list.GetItemCount(),
+                direction,
+            )
+            self.references_list.SetItem(row, 1, reference_kind(reference))
+            self.references_list.SetItem(row, 2, reference.path)
+            self.references_list.SetItem(row, 3, reference_info(reference))
+
     def _show_references(self, visible: bool) -> None:
-        self.references_label.Show(visible)
-        self.references_list.Show(visible)
+        if visible:
+            if not self.reference_splitter.IsSplit():
+                self.reference_splitter.SplitHorizontally(
+                    self.editor_panel,
+                    self.references_panel,
+                    self.FromDIP(170),
+                )
+            self.references_panel.Show()
+        elif self.reference_splitter.IsSplit():
+            self.reference_splitter.Unsplit(self.references_panel)
         self.Layout()
 
-    def _on_reference_activated(self, _event: wx.CommandEvent) -> None:
-        index = self.references_list.GetSelection()
-        if index == wx.NOT_FOUND or self._on_navigate is None:
+    def _on_references_size(self, event: wx.SizeEvent) -> None:
+        event.Skip()
+        width = self.references_list.GetClientSize().width
+        fixed = sum(self.references_list.GetColumnWidth(i) for i in range(3))
+        scrollbar = self.FromDIP(18)
+        self.references_list.SetColumnWidth(
+            3,
+            max(self.FromDIP(220), width - fixed - scrollbar),
+        )
+
+    def _on_reference_activated(self, event: wx.ListEvent) -> None:
+        index = event.GetIndex()
+        if not 0 <= index < len(self._reference_rows) or self._on_navigate is None:
             return
-        self._on_navigate(self._references[index].path)
+        self._on_navigate(self._reference_rows[index][1].path)
+
+    def _on_reference_context(self, event: wx.ContextMenuEvent) -> None:
+        if not self._reference_rows:
+            return
+        index = self.references_list.GetFirstSelected()
+        if index < 0 or index >= len(self._reference_rows):
+            return
+        direction, reference = self._reference_rows[index]
+        menu = wx.Menu()
+        copy_path = menu.Append(wx.ID_ANY, "Copy path")
+        copy_description = menu.Append(wx.ID_ANY, "Copy info")
+        open_reference = menu.Append(wx.ID_ANY, "Open reference")
+        self.Bind(wx.EVT_MENU, lambda _event: self._copy_text(reference.path), copy_path)
+        self.Bind(wx.EVT_MENU, lambda _event: self._copy_text(reference_info(reference)), copy_description)
+        self.Bind(
+            wx.EVT_MENU,
+            lambda _event: self._on_navigate(reference.path) if self._on_navigate else None,
+            open_reference,
+        )
+        self.PopupMenu(menu)
+        menu.Destroy()
+
+    @staticmethod
+    def _copy_text(value: str) -> None:
+        if not wx.TheClipboard.Open():
+            return
+        try:
+            wx.TheClipboard.SetData(wx.TextDataObject(value))
+        finally:
+            wx.TheClipboard.Close()

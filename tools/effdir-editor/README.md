@@ -50,6 +50,8 @@ between monitors with different scale factors.
   component records, and effect descriptions (with their name-map entry).
 - Raw field editing everywhere; command-binding labels/evidence shown
   where the catalog has an entry.
+- The record editor has a field filter, a resizable incoming/outgoing reference
+  table, and a modal line editor for scalar curve-like vectors.
 - Binding-driven `set_command` transactions and per-bit flag editors.
 - Optional QFS compression on DBPF writes, preserving the original state by default.
 - Unsupported major versions or malformed input fall back to a

@@ -1269,7 +1269,13 @@ CATALOG: List[CommandBinding] = [
         member_paths=["shell_count", "shell_offset"],
         presence_bits=[],
         encoding="u16",
-        transforms=["optional geometry offset rounded to nearest integer"],
+        transforms=[
+            Transform(
+                description="optional geometry offset rounded to nearest integer",
+                reversible=False,
+                implementation="optional geometry offset rounded to nearest integer",
+            )
+        ],
         shared_storage_group=None,
         conflicts=[],
         evidence="runtime",
@@ -1458,7 +1464,13 @@ CATALOG: List[CommandBinding] = [
         member_paths=["zoom"],
         presence_bits=[BitRef(member_path="flags", bit=0)],
         encoding="u8",
-        transforms=["subtract 1"],
+        transforms=[
+            Transform(
+                description="parser subtracts 1",
+                reversible=True,
+                implementation="subtract 1",
+            )
+        ],
         shared_storage_group=None,
         conflicts=[],
         evidence="runtime",
@@ -1554,7 +1566,13 @@ CATALOG: List[CommandBinding] = [
         member_paths=["location_update_rate"],
         presence_bits=[],
         encoding="f32",
-        transforms=["positive input stored as reciprocal"],
+        transforms=[
+            Transform(
+                description="positive input stored as reciprocal",
+                reversible=True,
+                implementation="positive input stored as reciprocal",
+            )
+        ],
         shared_storage_group=None,
         conflicts=[],
         evidence="runtime",

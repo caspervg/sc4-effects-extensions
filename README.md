@@ -56,9 +56,9 @@ The editor supports:
 - lossless read/write round trips for major versions 3 and 4, including the version-1 effect-description read profile, marker words, and unknown or trailing bytes;
 - raw field editing and evidence-based command editing, including multi-field transactions, presence-bit updates, conflict checks, and bitfield controls;
 - add, remove, and undo/redo operations for particles, decals, shakes, lights, dynamic particles, component records, and effect descriptions;
-- reference navigation for effect-name maps, effect keys, message triggers, sequence play items, component descriptions, and shake/light event targets;
+- incoming and outgoing reference navigation for effect-name maps, effect keys, message triggers, sequence play items, component descriptions, and shake/light event targets;
 - semantic validation for dangling targets, invalid component links, invalid event links, unexpected markers, invalid strings, non-finite floats, and version-profile errors;
-- synchronized resource-tree, search, diagnostics, reference, and hex views;
+- synchronized resource-tree, field-filter, diagnostics, structured reference, modal curve, and hex views;
 - DBPF writes with QFS compression preserved by default, or explicitly enabled or disabled;
 - selection of multiple EFFDIR resources in one DBPF package; and
 - raw-preserved, read-only fallback for unsupported versions and malformed resources.
