@@ -476,7 +476,7 @@ Version1EffectDescription {
     priority: Raw<u32>,
     descriptions: WireVector<DescriptionRecord>,
     events: WireVector<EventRecord>,
-    effect_name: WireString
+    chain_effect: WireString
 }
 ```
 
@@ -485,7 +485,7 @@ field sequence matches the current particle reader, so it is represented as a
 separate read profile without duplicating the particle schema. The effect
 version-1 reader is `ReadVersion1` at `0x003FC72C`; unlike the current reader,
 it does not consume `start_message_1`, `start_message_2`, or `start_message_3`
-after `effect_name`. The current readers are `0x003F61AA` and `0x003FC790`.
+after `chain_effect`. The current readers are `0x003F61AA` and `0x003FC790`.
 
 The editor must retain `read_profile` in preservation metadata. Version-1
 resources may be inspected and written back unchanged, but canonical edits
@@ -560,7 +560,7 @@ EffectDescription {
     priority: Raw<u32>,
     descriptions: WireVector<DescriptionRecord>,
     events: WireVector<EventRecord>,
-    effect_name: WireString,
+    chain_effect: WireString,
     start_message_1: Raw<u32>,
     start_message_2: Raw<u32>,
     start_message_3: Raw<u32>

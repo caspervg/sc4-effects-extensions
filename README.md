@@ -51,13 +51,23 @@ Boolean values accept `true`/`false`, `1`/`0`, and `yes`/`no`.
 
 `tools/effdir-editor` is a wxPython desktop editor for the packed effects resource `EA5118B0-EA5118B1-00000001`. It accepts DBPF packages and raw extracted `EFFDIR` blobs and provides a resource tree, field editor, synchronized hex view, reference navigation, search, diagnostics, and undo/redo.
 
-The editor supports lossless read/write round trips for major versions 3 and 4, including the version-1 effect-description profile, marker words, and unknown or trailing bytes. Unsupported versions and malformed resources open as raw-preserved, read-only data instead of being interpreted speculatively.
+The editor supports:
+
+- lossless read/write round trips for major versions 3 and 4, including the version-1 effect-description read profile, marker words, and unknown or trailing bytes;
+- raw field editing and evidence-based command editing, including multi-field transactions, presence-bit updates, conflict checks, and bitfield controls;
+- add, remove, and undo/redo operations for particles, decals, shakes, lights, dynamic particles, component records, and effect descriptions;
+- reference navigation for effect-name maps, effect keys, message triggers, sequence play items, component descriptions, and shake/light event targets;
+- semantic validation for dangling targets, invalid component links, invalid event links, unexpected markers, invalid strings, non-finite floats, and version-profile errors;
+- synchronized resource-tree, search, diagnostics, reference, and hex views;
+- DBPF writes with QFS compression preserved by default, or explicitly enabled or disabled;
+- selection of multiple EFFDIR resources in one DBPF package; and
+- raw-preserved, read-only fallback for unsupported versions and malformed resources.
 
 Current limitations:
 
-- command bindings are descriptive; multi-field `set_command` edits are not implemented;
-- DBPF entries are saved uncompressed because QFS compression is not implemented;
-- flags are edited as raw values rather than through per-bit controls.
+- the command-binding catalog is not complete; fields without verified bindings remain available through raw editing;
+- component type 2 remains opaque because no safe collection target has been confirmed; and
+- version-1 resources can be read and preserved, but edited version-1 output is blocked until its writer contract is confirmed.
 
 Prebuilt Windows x64 packages are attached to releases. The macOS arm64 package is experimental. To run from source, install [uv](https://docs.astral.sh/uv/) and Python 3.12 or newer:
 

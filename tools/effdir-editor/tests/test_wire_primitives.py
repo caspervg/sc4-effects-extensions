@@ -229,7 +229,7 @@ def test_sound_option_word_keeps_bitset_type_and_constructor_default():
 
     description = default_description_record()
     assert description.shell_count.value == 1
-    assert description.shell_delay.value == 16
+    assert description.shell_offset.value == 16
     assert description.selection_group.value == 0
     assert description.description_index.value == 0xFFFFFFFF
     assert description.legacy_transform.matrix.row_0 == Vec3(1.0, 0.0, 0.0)

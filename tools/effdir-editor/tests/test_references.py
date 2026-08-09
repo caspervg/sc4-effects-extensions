@@ -64,3 +64,36 @@ def test_out_of_range_event_descriptor_index_is_not_linked():
     )
 
     assert build_reference_index(resource).path_backlinks == {}
+
+
+def test_description_records_link_to_verified_component_collections():
+    description = SimpleNamespace(
+        name=_name("particle child"),
+        component_type=_value(0),
+        description_index=_value(1),
+    )
+    resource = SimpleNamespace(
+        effect_name_map=_vector(SimpleNamespace(name=_name("owner"), target=_value(0))),
+        effect_key_map=_vector(),
+        message_triggers=_vector(),
+        effect_descriptions=_vector(SimpleNamespace(descriptions=_vector(description), events=_vector())),
+        particles=_vector(object(), object()),
+        decals=_vector(),
+        shakes=_vector(),
+        lights=_vector(),
+        dynamic_particles=_vector(),
+        components=SimpleNamespace(
+            brushes=_vector(),
+            attractors=_vector(),
+            scrubbers=_vector(),
+            sequences=_vector(),
+            sounds=_vector(),
+            cameras=_vector(),
+        ),
+    )
+
+    index = build_reference_index(resource)
+
+    reference = index.path_backlinks["particles[1]"][0]
+    assert reference.path == "effect_descriptions[0].descriptions[0]"
+    assert "particle" in reference.label

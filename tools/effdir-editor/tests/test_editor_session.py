@@ -61,6 +61,7 @@ def test_add_effect_allocates_its_actual_description_index():
     api.add_effect(session, "second")
 
     assert [entry.target.value for entry in session.working.effect_name_map.items] == [0, 1]
+    assert [effect.chain_effect.decoded for effect in session.working.effect_descriptions.items] == ["", ""]
     assert session.new_paths == {"effect_descriptions[0]", "effect_descriptions[1]"}
 
     api.undo(session)

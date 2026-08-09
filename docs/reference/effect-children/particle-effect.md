@@ -9,7 +9,7 @@ Status: `Confirmed`
 
 ```fx
 particleEffect ExistingParticleName [shared child options...]
-particleEffect ExistingParticleName -shells <count> [float]
+particleEffect ExistingParticleName -shells <count> [offset]
 ```
 
 ## Notes
@@ -17,5 +17,8 @@ particleEffect ExistingParticleName -shells <count> [float]
 - valid only inside `effect`
 - referenced particle definition must exist
 - unknown names throw `Unknown particle definition: %s`
-- `-shells` is recovered, but the exact meaning of its optional second value is
-  still unresolved
+- the optional second `-shells` value is stored as a rounded `u16`
+- shell `i` receives `offset * i` through runtime parameter `0x101`
+- the value is a spatial offset along the geometry-sourced particle view
+  direction, with no time-unit conversion
+- normal and model-based particle paths ignore parameter `0x101`

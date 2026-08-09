@@ -41,7 +41,7 @@ def _self_display_name(value: Any) -> Optional[str]:
 def resolve_display_name(value: Any, path: str, reference_index: Optional[ReferenceIndex]) -> Optional[str]:
     """Display-worthy name for `value` at `path`: either a name it carries
     directly (`_SELF_NAME_FIELD`), or -- for an `EffectDescription`, whose
-    own `effect_name` reads back empty in real files -- the name resolved
+    own `chain_effect` reads back empty in real files -- the name resolved
     through `effect_name_map` (see references.py's docstring). Takes an
     already-known `value`/`path` pair rather than re-deriving them from
     `root`, so callers walking many nodes (search.py) can call this without

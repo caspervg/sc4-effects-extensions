@@ -4,7 +4,7 @@
 Verified against the real vanilla `EFFDIR` in `SimCity_1.dat`: contrary to
 what effdir.md's prose implies ("effect-name lookup map"),
 `effect_name_map[i].target` is not matched against `EffectDescription.
-effect_name` -- that field reads back empty (0-length string) for every one
+chain_effect` -- that field reads back empty (0-length string) for every one
 of the file's 1154 effect descriptions. Instead `target` is a plain index
 into `effect_descriptions.items` (the 1154 target values in the real file
 are exactly the permutation `0..1153`, one per description, all unique).
@@ -21,8 +21,11 @@ single-resource index can't see.
 Event records are the exception among component references: their final u32
 is proven by `StartAncilliary` to index top-level `shakes` for bit 0 and
 `lights` for bits 2/3. Those direct references are included as
-path-based backlinks. DescriptionRecord component references remain excluded
-until their component-type mapping is complete.
+path-based backlinks. DescriptionRecord component references use the
+component-type values observed in the vanilla resource to link into the
+corresponding top-level collection. Component type 2 is intentionally left
+opaque: vanilla records use it as a non-collection runtime component and its
+index is not a collection index.
 """
 
 from __future__ import annotations
@@ -38,6 +41,24 @@ from ..model.resource import EffDirResource
 class Reference:
     path: str
     label: str
+
+
+# tSC4ComponentEffectType values confirmed by the vanilla EFFDIR's
+# DescriptionRecord indices and collection sizes. Keep this table here so
+# navigation and validation share the same evidence-backed mapping.
+COMPONENT_COLLECTIONS = {
+    0: ("particles", "particle"),
+    1: ("decals", "decal"),
+    3: ("components.brushes", "brush"),
+    4: ("components.attractors", "attractor"),
+    5: ("components.scrubbers", "scrubber"),
+    6: ("components.sequences", "sequence"),
+    7: ("components.sounds", "sound"),
+    8: ("components.cameras", "camera"),
+    16: ("dynamic_particles", "dynamic particle"),
+}
+
+OPAQUE_COMPONENT_TYPES = {2}
 
 
 @dataclass(frozen=True)
@@ -159,4 +180,26 @@ def build_reference_index(resource: EffDirResource) -> ReferenceIndex:
                 path_backlinks.setdefault(f"lights[{target}]", []).append(
                     Reference(source_path, f'{owner} event[{event_index}] "{event_name}" (tintEffect)')
                 )
+        descriptions = getattr(effect, "descriptions", None)
+        if descriptions is None:
+            continue
+        for description_index, description in enumerate(descriptions.items):
+            component = COMPONENT_COLLECTIONS.get(description.component_type.value)
+            if component is None:
+                continue
+            collection_path, component_label = component
+            target = int(description.description_index.value)
+            collection = resource
+            for token in collection_path.split("."):
+                collection = getattr(collection, token)
+            if not 0 <= target < len(collection.items):
+                continue
+            source_path = f"effect_descriptions[{effect_index}].descriptions[{description_index}]"
+            description_name = description.name.decoded or ""
+            path_backlinks.setdefault(f"{collection_path}[{target}]", []).append(
+                Reference(
+                    source_path,
+                    f'{owner} description[{description_index}] "{description_name}" ({component_label})',
+                )
+            )
     return ReferenceIndex(backlinks=dict(index), names=names, path_backlinks=path_backlinks)

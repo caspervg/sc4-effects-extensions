@@ -115,13 +115,13 @@ bitset<9>
 u32 priority
 vector<DescriptionRec>
 vector<EventRec>
-string effect_name
+string chain_effect
 ```
 
 It does not consume the three current-layout start-message scalars at object
 offsets `+0x20`, `+0x24`, and `+0x28`; it initializes at least `+0x20` to zero
 in memory. The current reader at `0x003FC790` consumes those three `u32`
-values after the effect name. Consequently, a version-1 reader must use a
+values after the chain-effect string. Consequently, a version-1 reader must use a
 shorter effect record and the parser must not drift into the following record.
 
 No distinct `WriteVersion1` function is identified in the current program.
@@ -279,7 +279,7 @@ verified shape:
 ```text
 bitset<9>@+0x00, u32@+0x04,
 vector<DescriptionRec>@+0x08, vector<EventRec>@+0x14,
-string@+0x2c, u32@+0x20, u32@+0x24, u32@+0x28
+string chain_effect@+0x2c, u32@+0x20, u32@+0x24, u32@+0x28
 ```
 
 The object layout is non-monotonic because the two vectors and string are
@@ -388,9 +388,12 @@ why parser workspace offsets must not be mistaken for object offsets.
 | `+0x04` | `priority` | direct scalar assignment |
 | `+0x20`, `+0x24`, `+0x28` | `startMessage` arguments 1–3 | direct scalar assignments |
 
-The description string at `+0x2c` is not assigned by this handler, and its
-meaning is intentionally unknown. Description and event vectors are filled by
-child commands, not by this top-level parser.
+The description string at `+0x2c` is assigned by `chainEffect` at
+`0x0078CBD4`. Finalization passes the complete description to the effects
+collection at `0x007855E6`; `AddEffectDescription` (`0x003E4B2E`) copies and
+lowercases the string. No runtime consumer was found in the observed effects
+manager path. Description and event vectors are filled by child commands, not
+by this top-level parser.
 
 `cMessageTriggerCommand::Parse` at `0x007857BC` writes the final top-level
 record as `message id` followed by `effect name`; this mapping comes from its
@@ -471,7 +474,7 @@ does not model the parser's apparent erroneous write as union storage.
 | `+0x34/+0x38/+0x3c` | `offset` | vector components |
 | `+0x40` | `scale` | transform flag is also updated |
 | `+0x44/+0x45` | `lod` / `lodRange` | low/high bytes; parser default is 1/6 |
-| `+0x46/+0x48` | particle `shells` count and stagger delay | `cGroupParticlesCommand::Parse`, `0x0078D6C4`; runtime creates `count` instances and applies `delay × shell index` at `0x00406246` |
+| `+0x46/+0x48` | particle `shells` count and per-shell geometry offset | `cGroupParticlesCommand::Parse`, `0x0078D6C4`; runtime creates `count` instances and applies `offset × shell index` as parameter `0x101` at `0x00406246` |
 | `+0x4c/+0x50` | `emitScale` minimum/maximum | one value supplies both |
 | `+0x54/+0x58` | `sizeScale` minimum/maximum | one value supplies both |
 | `+0x5c` | enclosing `select` group ID | assigned by `AddDescription`/`AddAnonDescription`; consumed by `UpdateVisualEffect`, `0x0040658E` |

@@ -33,6 +33,7 @@ from . import paths as _paths
 from .opaque_ranges import opaque_ranges as _opaque_ranges
 from .references import Reference, ReferenceIndex, build_reference_index, references_to_name
 from .session import Change, ChangeSet, EditorSession, open_session
+from .validation import validate_resource
 
 RECORD_FACTORIES: Dict[str, Any] = {
     "ParticleDescriptor": default_particle,
@@ -67,6 +68,15 @@ class EvidenceConfirmationRequired(CommandBindingError):
 
 class CommandConflictError(CommandBindingError):
     pass
+
+
+class ValidationError(ValueError):
+    def __init__(self, diagnostics: List[Diagnostic]):
+        self.diagnostics = diagnostics
+        summary = "; ".join(d.message for d in diagnostics[:3])
+        if len(diagnostics) > 3:
+            summary += f"; and {len(diagnostics) - 3} more"
+        super().__init__(f"cannot write resource: {summary}")
 
 
 _COMMAND_MEMBER_ALIASES = {
@@ -332,9 +342,9 @@ def _apply_command_transforms(binding: CommandBinding, values: Dict[str, Any]) -
         elif implementation == "clamp(fade, max=length)":
             if "length" in values and "fade" in values:
                 values["fade"] = min(values["fade"], values["length"])
-        elif implementation == "optional delay rounded to nearest integer":
-            if "shell_delay" in values and values["shell_delay"] is not None:
-                values["shell_delay"] = round(values["shell_delay"])
+        elif implementation == "optional geometry offset rounded to nearest integer":
+            if "shell_offset" in values and values["shell_offset"] is not None:
+                values["shell_offset"] = round(values["shell_offset"])
         elif implementation == "subtract 1":
             for path in values:
                 values[path] -= 1
@@ -436,7 +446,6 @@ def add_effect(session: EditorSession, name: str) -> ChangeSet:
 
     session.snapshot()
     description = default_effect_description()
-    description.effect_name = WireString.from_text(name)
     session.working.effect_descriptions.items.append(description)
     effect_index = len(session.working.effect_descriptions.items) - 1
 
@@ -458,7 +467,7 @@ def add_effect(session: EditorSession, name: str) -> ChangeSet:
 
 
 def validate(session: EditorSession) -> List[Diagnostic]:
-    return list(session.working.preservation.diagnostics)
+    return validate_resource(session.working, dirty=session.dirty)
 
 
 def opaque_ranges(session: EditorSession, encoded_length: int) -> List[Tuple[int, int]]:
@@ -480,6 +489,10 @@ def preview_write(session: EditorSession) -> WritePreview:
 
 def commit(session: EditorSession, write_options: Optional[WriteOptions] = None) -> CommitResult:
     write_options = write_options or WriteOptions()
+    diagnostics = validate(session)
+    blocking = [d for d in diagnostics if d.severity == "error"]
+    if blocking and not (not session.dirty and all(d.code == "unparsed_resource" for d in blocking)):
+        raise ValidationError(blocking)
     backup_path = session.source.backup(session.handle)
     data = write_resource(session.working)
     result = session.source.write(session.handle, data, write_options)
@@ -489,7 +502,7 @@ def commit(session: EditorSession, write_options: Optional[WriteOptions] = None)
     return CommitResult(
         output_path=result.path,
         backup_path=backup_path,
-        diagnostics=validate(session),
+        diagnostics=diagnostics,
         warnings=result.warnings,
     )
 

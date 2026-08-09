@@ -7,7 +7,7 @@ order, not ascending `+0xNN`:
 
     bitset<9>, u32 priority,
     vector<DescriptionRec>, vector<EventRec>,
-    string effect_name, u32 start_message_1, u32 start_message_2, u32 start_message_3
+    string chain_effect, u32 start_message_1, u32 start_message_2, u32 start_message_3
 
 `DescriptionRec` embeds a `legacy-transform` (`S3DTransformLegacyLoad` at
 0x0009844A: 3 row-major Vec3 matrix rows, a Vec3 translation, uniform scale,
@@ -19,7 +19,7 @@ consumes 4 bytes. Treating it as u8 desyncs every DescriptionRec after the
 first by 3 bytes.
 
 Version-1 effect descriptions (`ReadVersion1` at 0x003FC72C) stop after
-`effect_name` and do not serialize the three start-message scalars; no
+`chain_effect` and do not serialize the three start-message scalars; no
 `WriteVersion1` has been found, so writing a version-1 resource must not
 emit the current three-u32 tail (effdir-editor-spec.md, "Version-1 read
 profile"). `read_effect_description`/`write_effect_description` therefore
@@ -121,7 +121,7 @@ class DescriptionRecord:
     lod: Raw[int]
     lod_range: Raw[int]
     shell_count: Raw[int]  # +0x46, particle "shells" count
-    shell_delay: Raw[int]  # +0x48, per-shell delay passed as param 0x101
+    shell_offset: Raw[int]  # +0x48, per-shell geometry offset passed as param 0x101
     emit_scale_min: Raw[float]
     emit_scale_max: Raw[float]
     size_scale_min: Raw[float]
@@ -141,7 +141,7 @@ def read_description_record(cursor: ReadCursor) -> DescriptionRecord:
         lod=read_u8(cursor),
         lod_range=read_u8(cursor),
         shell_count=read_u16(cursor),
-        shell_delay=read_u16(cursor),
+        shell_offset=read_u16(cursor),
         emit_scale_min=read_f32(cursor),
         emit_scale_max=read_f32(cursor),
         size_scale_min=read_f32(cursor),
@@ -160,7 +160,7 @@ def write_description_record(writer: WriteCursor, d: DescriptionRecord) -> None:
     write_raw(writer, d.lod)
     write_raw(writer, d.lod_range)
     write_raw(writer, d.shell_count)
-    write_raw(writer, d.shell_delay)
+    write_raw(writer, d.shell_offset)
     write_raw(writer, d.emit_scale_min)
     write_raw(writer, d.emit_scale_max)
     write_raw(writer, d.size_scale_min)
@@ -179,7 +179,7 @@ def default_description_record() -> DescriptionRecord:
         lod=make_raw_u8(1),  # parser default per effdir.md ParseDescRecOptions
         lod_range=make_raw_u8(6),  # parser default
         shell_count=make_raw_u16(1),
-        shell_delay=make_raw_u16(16),
+        shell_offset=make_raw_u16(16),
         emit_scale_min=make_raw_f32(1.0),
         emit_scale_max=make_raw_f32(1.0),
         size_scale_min=make_raw_f32(1.0),
@@ -233,7 +233,7 @@ class EffectDescription:
     priority: Raw[int]
     descriptions: WireVector[DescriptionRecord]
     events: WireVector[EventRecord]
-    effect_name: WireString
+    chain_effect: WireString
     start_message_1: Raw[int]
     start_message_2: Raw[int]
     start_message_3: Raw[int]
@@ -245,7 +245,7 @@ def read_effect_description(cursor: ReadCursor, profile: ReadProfile) -> EffectD
     priority = read_u32(cursor)
     descriptions = read_vector(cursor, read_description_record)
     events = read_vector(cursor, read_event_record)
-    effect_name = read_wire_string(cursor)
+    chain_effect = read_wire_string(cursor)
     if profile is ReadProfile.VERSION1:
         # ReadVersion1 (0x003FC72C) does not consume these; the executable
         # initializes at least +0x20 to zero in memory.
@@ -261,7 +261,7 @@ def read_effect_description(cursor: ReadCursor, profile: ReadProfile) -> EffectD
         priority=priority,
         descriptions=descriptions,
         events=events,
-        effect_name=effect_name,
+        chain_effect=chain_effect,
         start_message_1=start_message_1,
         start_message_2=start_message_2,
         start_message_3=start_message_3,
@@ -273,7 +273,7 @@ def write_effect_description(writer: WriteCursor, e: EffectDescription, profile:
     write_raw(writer, e.priority)
     write_vector(writer, e.descriptions, write_description_record)
     write_vector(writer, e.events, write_event_record)
-    write_wire_string(writer, e.effect_name)
+    write_wire_string(writer, e.chain_effect)
     if profile is ReadProfile.VERSION1:
         # No WriteVersion1 has been identified in the executable; emitting
         # the current 3xu32 tail for a version-1 resource would invent an
@@ -292,7 +292,7 @@ def default_effect_description() -> EffectDescription:
         priority=make_raw_u32(0),
         descriptions=WireVector(count=0, items=[], source_span=None),
         events=WireVector(count=0, items=[], source_span=None),
-        effect_name=WireString(decoded="", raw_bytes=b"", encoding="utf8", framing=None, valid=True, changed=True),
+        chain_effect=WireString(decoded="", raw_bytes=b"", encoding="utf8", framing=None, valid=True, changed=True),
         start_message_1=make_raw_u32(0),
         start_message_2=make_raw_u32(0),
         start_message_3=make_raw_u32(0),
