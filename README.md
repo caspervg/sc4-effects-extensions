@@ -2,6 +2,8 @@
 
 Tools for authoring, loading, testing, and inspecting SimCity 4 effects. The repository contains an in-game DLL, a standalone packed-resource editor, and documentation for the recovered effects language and `EFFDIR` binary format.
 
+For the story behind this project, read [Every single disaster was an effect](https://dev.to/caspervg/every-single-disaster-was-an-effect-5ghc), which follows SimCity 4's effects system from its original scripts through twenty years of community research to the decoded EFFDIR format and new editing toolchain.         
+
 | Component | Purpose |
 | --- | --- |
 | `SC4EffectsExtensions.dll` | Loads and recompiles `.fx` sources in-game, exposes an effects console, and writes the compiled effects resource to a DBPF package. |
