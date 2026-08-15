@@ -1,938 +1,701 @@
-# Packed EFFDIR wire format
+# EFFDIR
 
 Status: `Partial`
 
-This is the serializer recovered from the SimCity 4 executable with Ghidra.
-It is intentionally not presented as a proven mapping of the SC4 Wiki's
-numbered EFFDIR sections. The wiki, `or_dat`, and `scdbpf` are useful leads,
-but are not evidence for EFFDIR field meaning here.
+EFFDIR is the packed effect resource for SimCity 4. The standard Maxis
+resource is in `SimCity_1.dat`. It has this resource key:
 
-## Container identity
-
-DBPF MCP identifies the vanilla resource as:
-
-```text
-Type     EA5118B0
-Group    EA5118B1
-Instance 00000001
-Kind     EFFDIR
-Stored   compressed
-Size     111721 bytes
-```
-
-The game code uses the same type/group when resolving `loadResource` and
-`effectsResource`; see [resource binding](../top-level/resource-binding.md).
-
-## Verified stream rules
-
-- little-endian byte order
-- the stream begins with two `uint16` values: major version, minor version
-- the game's writer emits `4, 2`
-- the reader accepts major version `3` or `4`
-- vector counts are `uint32`
-- strings use the game's stream string operator; the packed EFFDIR
-  `std::string` path is a length-prefixed `cRZString` byte payload with no
-  character-code conversion in the operator
-- `float` values are IEEE-754 single precision
-- scalar byte/word/dword reads are selected by the stream vtable, not by the
-  wiki's `DWORD` labels
-
-The serializer's stream calls establish this primitive mapping:
-
-| Stream vtable offset | Verified operation |
-| ---: | --- |
-| `+0x14` | byte-sized value |
-| `+0x1C` | `uint16`/`int16` value |
-| `+0x24` | `uint32` value |
-| `+0x30` | `float32` value |
-| `+0x3C` | string stream operation |
-
-`+0x20` occurs in one effect-description record. Ghidra shows it as a
-four-byte scalar operation; its signedness and semantic type remain unknown.
-
-DBPF MCP exposes the vanilla payload and compression metadata, but does not
-currently provide an EFFDIR/QFS semantic decoder. Do not use a provisional
-container decompression pass as evidence for EFFDIR counts or field meaning;
-the version and vector order below come from the executable serializer.
-
-## Verified top-level wire spine
-
-`cSC4EffectsResource::Write` at `0x003DE3DA` and `Read` at `0x003DDA9C`
-serialize this sequence:
-
-| Order | Wire data | Executable type / interpretation |
-| --- | --- | --- |
-| 1 | `u16 major`, `u16 minor` | resource version |
-| 2 | `u32 count`, records | `cSC4ParticlesDescription` |
-| 3 | `u16 marker = 1` | group marker written by the resource serializer |
-| 4 | `u32 count`, records | `cSC4DecalDescription` |
-| 5 | `u16 marker = 0` | group marker |
-| 6 | `u32 count`, records | `cSC4ShakeDescription` |
-| 7 | `u16 marker = 0` | group marker |
-| 8 | `u32 count`, records | `cSC4LightDescription` |
-| 9 | six `u32` counts plus records | brush, attractor, scrubber, sequence, sound, camera component vectors |
-| 10 | `u16 marker = 1` | group marker |
-| 11 | `u32 count`, records | `cSC4DynamicParticleDescription`; read only when major version is `4` |
-| 12 | `u16 marker = 2` | group marker |
-| 13 | `u32 count`, records | `cSC4EffectDescription` |
-| 14 | repeated `string`, `u32` pairs | effect-name lookup map |
-| 15 | `string "end"`, `u32 0xFFFFFFFF` | lookup-map terminator |
-| 16 | `u8 hasTrailingFloats`, optional vector | resource trailing metadata; optional `vector<float>` |
-| 17 | `u32 count`, records | effect-key map: `string`, `u32 group`, `u32 instance` |
-| 18 | `u32 0` | reserved/terminating scalar |
-| 19 | `u32 count`, records | `cSC4MessageTriggerDescription` |
-
-The marker words are part of the observed serializer contract. They must not
-be treated as the Wiki's section terminators without testing another game
-resource or a write/read round trip.
-
-## Version-1 reader paths
-
-The resource reader has separate paths for the observed version-selector value
-`1`. These are reader paths, not evidence that the editor may silently use the
-current writer for an older resource.
-
-### Version-1 particles
-
-`cSC4ParticlesDescription::ReadVersion1` at `0x003F66BA` reads the same
-serialized member sequence as the current `operator>>` at `0x003F61AA` in the
-traced executable: the three bitsets, the scalar/vector members, all six
-curve vectors, the nested wiggle/tractor/timed records, the resource fields,
-and the final model/explosion fields. The separate function is therefore a
-version-gated compatibility entry point, but no distinct particle wire layout
-has been demonstrated yet.
-
-The editor should still record the version path in resource metadata and test
-it independently. It must not infer a missing field merely because the game
-uses a separate reader function.
-
-### Version-1 effect descriptions
-
-`cSC4EffectDescription::ReadVersion1` at `0x003FC72C` is genuinely different:
-
-```text
-bitset<9>
-u32 priority
-vector<DescriptionRec>
-vector<EventRec>
-string chain_effect
-```
-
-It does not consume the three current-layout start-message scalars at object
-offsets `+0x20`, `+0x24`, and `+0x28`; it initializes at least `+0x20` to zero
-in memory. The current reader at `0x003FC790` consumes those three `u32`
-values after the chain-effect string. Consequently, a version-1 reader must use a
-shorter effect record and the parser must not drift into the following record.
-
-No distinct `WriteVersion1` function is identified in the current program.
-Until a matching writer or controlled round trip is found, version-1 editing
-should support lossless reading and unchanged writing only, or reject a
-canonical rewrite that would require inventing the old writer contract.
-
-## Component records
-
-The component vector order is fixed by `cSC4EffectsResource::Read/Write`:
-
-1. `cSC4BrushDescription`, allocated as `0x34` bytes
-2. `cSC4AttractorDescription`, allocated as `0x14` bytes
-3. `cSC4ScrubberDescription`, allocated as `0x50` bytes
-4. `cSC4SequenceDescription`, allocated as `0x1C` bytes
-5. `cSC4SoundDescription`, allocated as `0x1C` bytes
-6. `cSC4CameraDescription`, allocated as `0x18` bytes
-
-Allocation size is an in-memory size, not a claim that the wire record has
-the same size. The following are wire order, not fixed offsets: strings and
-vectors make the wire records variable-length. `member +0xNN` is the
-corresponding executable object member, useful for correlating the reader and
-writer but not for seeking in the file.
-
-| Type | Verified wire order |
+| Part | Value |
 | --- | --- |
-| Brush | `u16 marker(Write=0)`, `u32@+0x0c`, `f32@+0x10`, `f32@+0x14`, `u8@+0x18`, `u32@+0x1c`, `cS3DVector2@+0x20`, `cS3DVector2@+0x28`, `f32@+0x30` |
-| Attractor | `u16 marker(Write=0)`, `string@+0x0c`, `u32@+0x10` |
-| Scrubber | `u16 marker(Write=1)`, `u32@+0x0c`, `u32@+0x10`, `u32@+0x14`, `u32@+0x18`, `f32@+0x1c`, `f32@+0x20`, `u32@+0x24`, conditional `u32@+0x28`, `u32@+0x2c`, `u32@+0x30`, `u32@+0x34`, `u32@+0x38`, `f32@+0x3c`, `cS3DVector2@+0x40`, `f32@+0x48`, `f32@+0x4c` |
-| Sequence | `u16 marker(Write=1)`, `vector<SequenceItem>@+0x0c`, `bitset<3>@+0x18`; each item is `cS3DVector2` followed by `string` |
-| Sound | `u16 marker(Write=0)`, `bitset<1>@+0x0c`, `u32@+0x10`, `f32@+0x14`, `f32@+0x18` |
-| Camera | `u16 marker(Write=0)`, `bitset<4>@+0x0c`, `u8@+0x10`, `u8@+0x11`, `f32@+0x14` |
+| Type | `0xEA5118B0` |
+| Group | `0xEA5118B1` |
+| Instance | `0x00000001` |
 
-The scrubber reader only consumes the two fields at `+0x28` and `+0x2c` if
-the marker is nonzero; its writer emits them unconditionally. This is a real
-version/compatibility quirk, not a reason to assume that every marker is a
-section number.
+The game can load other EFFDIR resources. The Type and Group stay fixed. The
+Instance identifies the resource.
 
-The nested `cS3DVector2` and `cS3DVector3` records are respectively two and
-three `f32` values. The brush nested records therefore are not anonymous
-scalars; both are verified vector-2 values.
+This page describes the SimCity 4 binary format. It does not describe the
+different formats that later Maxis games use.
 
-The scalar meanings are not assigned in this document where Ghidra only
-shows an anonymous member. The text-format pages provide the safest semantic
-names for editor presentation, but the binary decoder should retain the raw
-value and wire type until each mapping is independently cross-checked.
+## Specification
 
-## Particle descriptor
+The old specification divided the file into 15 numbered sections. This page
+keeps those numbers because many existing notes use them. The file does not
+store the numbers as section identifiers. Most sections are C++ vectors in a
+fixed order. Each vector starts with a `u32` record count.
 
-`cSC4ParticlesDescription::operator>>` at `0x003F61AA` is the largest
-descriptor. Its fields are listed in wire order below. The `member +0xNN`
-annotations are executable object offsets; they are not wire offsets.
+The information on this page has four levels:
 
-```text
-bitset<32>@+0x000, bitset<8>@+0x004, bitset<11>@+0x008
-cS3DVector2@+0x00c, f32@+0x014, u32@+0x018, f32@+0x01c
-cS3DVector2@+0x020, cS3DVector2@+0x028, cS3DBoundingBox@+0x030
-cS3DVector2@+0x048, cS3DBoundingBox@+0x050
-f32@+0x068, f32@+0x06c, f32@+0x070, f32@+0x074, f32@+0x078
-cS3DVector3@+0x07c
-vector<f32>@+0x088, vector<cS3DVector3>@+0x094
-vector<f32>@+0x0a0, vector<f32>@+0x0ac
-vector<f32>@+0x0b8, vector<f32>@+0x0c4
-u32@+0x0d0, u8@+0x0d4, u8@+0x0d5, f32@+0x0d8, f32@+0x0dc
-cS3DVector3@+0x0e0, f32@+0x0ec, f32@+0x0f0
-cS3DVector3@+0x0f4, f32@+0x100, f32@+0x104
-vector<Wiggle>@+0x108, f32@+0x114, cS3DVector2@+0x118
-cS3DVector3@+0x120, vector<f32>@+0x12c
-f32@+0x138, f32@+0x13c, f32@+0x140, f32@+0x144
-f32@+0x148, f32@+0x14c, f32@+0x150, f32@+0x154
-cS3DVector2@+0x158, string@+0x160, u16@+0x164, u16@+0x166
-f32@+0x168, cS3DVector2@+0x16c, cS3DVector2@+0x174
-f32@+0x17c, f32@+0x180, cS3DVector3@+0x184
-f32@+0x190, f32@+0x194, f32@+0x198, vector<f32>@+0x19c
-f32@+0x1a8, u32@+0x1ac, vector<TractorPoint>@+0x1b0
-f32@+0x1bc, vector<TimedEffect>@+0x1c4
-f32@+0x1d0, f32@+0x1d4, vector<u32>@+0x1d8
-f32@+0x1e4, f32@+0x1e8, vector<f32>@+0x1ec, f32@+0x1f8
-```
-
-Nested records are also verified:
-
-| Nested record | Wire members |
+| Level | Meaning |
 | --- | --- |
-| `Wiggle` | `f32`, `cS3DVector3`, `cS3DVector3` (`28` bytes of fixed scalar payload) |
-| `TractorPoint` | `cS3DVector3`, `cS3DVector3`, `f32`, `f32` (`32` bytes) |
-| `TimedEffect` | `string`, `f32` |
+| **Wire** | The game reader and writer confirm the type and order. |
+| **Parser** | The effects text parser confirms which command writes the field. |
+| **Runtime** | Game code confirms the field use. |
+| **Unknown** | The file stores the field. We do not know its purpose. |
 
-The three leading bitsets are serialized as one `u32` each. The bit widths
-(`32`, `8`, and `11`) are verified; their individual meanings are not.
-Constructor defaults are executable observations, not semantic assignments.
-For example, the writer/constructor initializes the float vector at `+0x088`
-with `25`, the vector at `+0x094` with white, several scalar defaults to
-`1`, and the height-range values around `+0x158` to `-1000000000`, `-10000`,
-and `10000`. These resemble parts of the Wiki description but do not prove
-the Wiki labels.
+Do not assign a meaning to an unknown field only because one Maxis resource
+has a constant value in that field.
 
-## Other top-level descriptors
+When a table gives only a text option, we confirmed only the parser mapping.
+The option name does not prove the runtime behavior.
 
-These records are decoded from their paired read/write operators. As above,
-the order is wire order and `member +0xNN` is only an in-memory correlation.
+### Basic data types
 
-### Decal
+All numeric values use little-endian byte order.
 
-`cSC4DecalDescription` (`Read 0x0076270E`, `Write 0x0076289E`):
+| Name | Size | Description |
+| --- | ---: | --- |
+| `u8` | 1 byte | Unsigned integer. |
+| `u16` | 2 bytes | Unsigned integer. |
+| `u32` | 4 bytes | Unsigned integer. |
+| `f32` | 4 bytes | IEEE-754 single-precision float. |
+| `bitset<N>` | 4 bytes | A `u32` stores the bits. The record uses the low `N` bits. Preserve all bits. |
+| `Vec2` | 8 bytes | Two `f32` values. |
+| `Vec3` | 12 bytes | Three `f32` values. |
+| `Bounds3` | 24 bytes | Two `Vec3` values: minimum and maximum. |
+| `string` | Variable | A `u32` gives the byte count. The string bytes follow it. The wire has no terminator. |
+| `vector<T>` | Variable | A `u32` count, followed by that number of `T` records. |
 
-```text
-bitset<7>, u32, u8, u8, f32,
-vector<f32>, vector<f32>, vector<f32>, vector<cS3DVector3>, vector<f32>,
-f32, f32, f32, f32, cS3DVector2
-```
+EFFDIR strings are byte strings. The stream operator does not convert the
+character encoding. ASCII text is safe. A tool must preserve unchanged bytes.
+UTF-8 is a display and editing policy, not a proven rule of the file format.
 
-The reader normalizes the second byte to `2` and sets bit 6 when that byte is
-zero (`cSC4DecalDescription::Read`, `0x0076270E`). That post-read behavior
-should be preserved by an editor rather than silently treated as a fixed wire
-default.
+The word `marker` on this page means a stored `u16`. Some markers separate
+top-level groups. Some markers are at the start of a component record. A
+marker is not a section terminator unless this page explicitly says that it
+is a terminator.
 
-### Shake and light
+### Top-level order
 
-```text
-cSC4ShakeDescription:
-  f32, f32, vector<f32>, vector<f32>, f32, u8
+| Old section | Actual collection or field | Prefix or separator |
+| ---: | --- | --- |
+| Header | Version | Two `u16` values |
+| 1 | Particle descriptions | `u32 count` |
+| - | Particle/decal marker | `u16`, writer value `1` |
+| 2 | Decal descriptions | `u32 count` |
+| - | Decal/shake marker | `u16`, writer value `0` |
+| 3 | Shake descriptions | `u32 count` |
+| - | Shake/light marker | `u16`, writer value `0` |
+| 4 | Light descriptions | `u32 count` |
+| 5 | Brush descriptions | `u32 count` |
+| 6 | Attractor descriptions | `u32 count` |
+| 7 | Scrubber descriptions | `u32 count` |
+| 8 | Sequence descriptions | `u32 count` |
+| 9 | Sound descriptions | `u32 count` |
+| 10 | Camera descriptions | `u32 count` |
+| - | Component/dynamic-particle marker | `u16`, writer value `1` |
+| 11 | Dynamic-particle descriptions | `u32 count`; only in major version 4 |
+| - | Dynamic-particle/effect marker | `u16`, writer value `2` |
+| 12 | Effect descriptions | `u32 count` |
+| 13 | Effect-name map | No count; terminated by a special pair |
+| 13.5 | Optional fixed metadata | `u8 present` and an optional fixed payload |
+| 14 | Effect-key map | `u32 count` |
+| - | Key-map/message-trigger marker | `u16`, writer value `0` |
+| 15 | Message triggers | `u32 count` |
 
-cSC4LightDescription:
-  vector<cS3DVector3>, vector<f32>, f32
-```
+## Header
 
-The shake vector members occur at object offsets `+0x08` and `+0x14`; the
-final byte is at `+0x24`. The light reader/writer pair is at `0x003FC6EC`
-and its symmetric writer; it is not a Wiki “section 4” assertion.
+The header gives the resource version.
 
-### Dynamic particle
+| Order | Type | Property | Description |
+| ---: | --- | --- | --- |
+| 1 | `u16` | Major version | The game reader accepts `3` or `4`. Major version 3 has no Section 11. |
+| 2 | `u16` | Minor version | Minor version `1` selects an older Section 12 record. The current writer emits `2`. |
 
-`cSC4DynamicParticleDescription` is present only for major version `4`:
+SimCity 4 uses version `3.1`. Rush Hour and Deluxe use version `4.2`. A tool
+must keep the original version unless the user explicitly converts the
+resource.
 
-```text
-bitset<7>@+0x08, string@+0x0c,
-u32@+0x28, vector<u32>@+0x2c,
-f32@+0x10, f32@+0x14, f32@+0x18,
-f32@+0x1c, f32@+0x20, f32@+0x24
-```
+The version 1 particle reader has the same known wire order as the current
+particle reader. The version 1 effect reader is shorter. See Section 12.
 
-The read operator is `0x004B8ADA` and the paired writer is `0x004B8A2E`.
-Both place the model key and model-key vector before the six floats; the
-non-monotonic member offsets above are therefore also the exact wire order.
-The first bitset is serialized through the 7-bit bitset operator and occupies
-one `u32` on the wire. The constructor at `0x004B89B2` initializes mass
-(`+0x10`) to `1.0`; the remaining scalar members start at zero.
+## Section 1 - Particle Descriptions
 
-## Effect descriptions
+The old name for this section was "Terrain Independent FSHs and S3Ds." The
+actual record is `cSC4ParticlesDescription`. It controls sprite particles,
+model particles, emission, motion, collision, and particle child effects.
 
-`cSC4EffectDescription` (`Read 0x003FC790`, `Write 0x003FC4DA`) has this
-verified shape:
-
-```text
-bitset<9>@+0x00, u32@+0x04,
-vector<DescriptionRec>@+0x08, vector<EventRec>@+0x14,
-string chain_effect@+0x2c, u32@+0x20, u32@+0x24, u32@+0x28
-```
-
-The object layout is non-monotonic because the two vectors and string are
-non-scalar C++ members. The wire order is exactly the order shown, not the
-ascending member-offset order.
-
-`DescriptionRec` (`Read 0x003FC5A4`) is:
-
-```text
-string@+0x00, u8@+0x04, bitset<2>@+0x08,
-legacy-transform,
-u8@+0x44, u8@+0x45, u16@+0x46, u16@+0x48,
-f32@+0x4c, f32@+0x50, f32@+0x54, f32@+0x58,
-u16@+0x5c, u16@+0x5e, u32 resolved-description-index@+0x60
-```
-
-`legacy-transform` is not an opaque 40-byte blob. `S3DTransformLegacyLoad`
-at `0x0009844A` consumes, in order:
-
-```text
-3 x Vec3 (row-major cS3DMatrix3 rows)
-1 x Vec3 (translation)
-1 x f32  (uniform scale)
-1 x u32  (transform revision; object retains the low byte)
-```
-
-The bitset is serialized as a `u32`. The legacy loader (`0x0009844A`) derives
-the in-memory matrix/translation/scale presence flags, then replaces the
-transform's one-byte revision counter with the low byte of the final wire
-word. `cS3DTransform::operator=` (`0x0062BA46`) increments that counter on
-mutation. The editor exposes three editable matrix rows, translation, scale,
-and revision instead of one opaque matrix tuple.
-
-`EventRec` (`Read 0x003FC69E`) is:
-
-```text
-bitset<4>, string, f32, u32
-```
-
-The four event bits are fully correlated between the group-effect text
-commands and `cSC4EffectsManager::StartAncilliary` (`0x00405030`):
-
-| Bit | Text producer | Runtime meaning |
-|---:|---|---|
-| 0 | `shakeEffect` | dispatch the resolved shake descriptor |
-| 1 | shake default or flash `-epicentre`/`-epicenter` | use the effect origin as an epicenter |
-| 2 | `flashEffect` | dispatch the resolved light descriptor as a screen flash |
-| 3 | `tintEffect` | dispatch the resolved light descriptor as a lighting tint |
-
-For an epicentered flash, the `f32` is the falloff radius (the parser default
-is `1000.0`). The final `u32` is the resolved shake/light descriptor index;
-the string retains the source definition name. Shake and tint do not consume
-the `f32` in the traced runtime path.
-
-The effect-description reader dispatches to the version-1 record layout when
-the second version word is `1`; the current major-4 resource uses the full
-operator above. The particle version-1 reader is a separate compatibility
-entry point, but its traced wire sequence matches the current particle
-operator. The effect version-1 layout must therefore not be conflated with the
-current effect layout.
-
-## Message trigger descriptor
-
-`cSC4MessageTriggerDescription` is the final top-level vector. Its complete
-record is simply:
-
-```text
-u32, string
-```
-
-The reader is `0x003FC288`; the writer emits the same two members through the
-generic `u32` and string stream operators.
-
-These are wire-shape observations from the Ghidra operators; semantic names
-for anonymous members remain open reverse-engineering work.
-
-## Parser cross-reference (not binary semantics)
-
-Per the reverse-engineering boundary for this format, the text parser is not
-used to assign binary semantics. The cross-reference below records only which
-source spelling writes which member. It is useful provenance for later tests,
-but is not evidence of what the game does with the value at runtime. Fields
-not independently explained by consumers, calculations, or controlled
-resource pairs remain raw and unknown.
-
-For particle commands, `cSC4EffectsParser +0x120` is the working particle
-descriptor. The particle offsets below are translated from that base; this is
-why parser workspace offsets must not be mistaken for object offsets.
-
-### Effect records
-
-`cGroupEffectCommand::Parse` at `0x0078510A` directly maps these members of
-`cSC4EffectDescription`:
-
-| Member | Text property | Evidence |
-| --- | --- | --- |
-| bitset bit 0 | `viewRelative` | direct bit set |
-| bitset bit 1 | `noAutoStop` | direct bit set |
-| bitset bit 2 | `hardStop` | direct bit set |
-| bitset bit 3 | `rigid` | direct bit set |
-| bitset bit 4 | `noPropagate` | direct bit set |
-| bitset bit 5 | `applyCursor` | direct bit set |
-| bitset bit 6 | `ignoreOrientation` | direct bit set |
-| bitset bit 7 | `noLODStop` | direct bit set |
-| bitset bit 8 | `manualRestart` | direct bit set |
-| `+0x04` | `priority` | direct scalar assignment |
-| `+0x20`, `+0x24`, `+0x28` | `startMessage` arguments 1–3 | direct scalar assignments |
-
-The description string at `+0x2c` is assigned by `chainEffect` at
-`0x0078CBD4`. Finalization passes the complete description to the effects
-collection at `0x007855E6`; `AddEffectDescription` (`0x003E4B2E`) copies and
-lowercases the string. No runtime consumer was found in the observed effects
-manager path. Description and event vectors are filled by child commands, not
-by this top-level parser.
-
-`cMessageTriggerCommand::Parse` at `0x007857BC` writes the final top-level
-record as `message id` followed by `effect name`; this mapping comes from its
-two non-switch text arguments.
-
-### Component records
-
-These mappings come from the component parse handlers and use the serialized
-object offsets already listed above.
-
-| Record/member | Text property or option | Parser evidence |
-| --- | --- | --- |
-| Brush `+0x0c` | `-name` resource key | `cGroupBrushCommand::Parse`, `0x0078C690` |
-| Brush `+0x10` | `-rate`; also `-apply` value | same |
-| Brush `+0x14` | `-length` | same |
-| Brush `+0x18` | apply mode set by `-apply` | same; byte only |
-| Brush `+0x1c` | `-zoom` minus one | same |
-| Brush `+0x20/+0x24` | `-strength` minimum/maximum | same |
-| Brush `+0x28/+0x2c` | `-width` minimum/maximum | same |
-| Brush `+0x30` | `-level` | same |
-| Attractor `+0x0c` | `-name` or `-group` string | `cGroupAttractorCommand::Parse`, `0x0078BA44` |
-| Attractor `+0x10` | name/group selector (`-group` sets `1`) | same |
-| Scrubber `+0x10` | no text assignment or runtime consumer found (`value_10 (unused?)`) | constructor `0x003E13F4`; reader/writer preserve it |
-| Scrubber `+0x14` | `-demolish` | `cGroupScrubberCommand::Parse`, `0x0078BC26` |
-| Scrubber `+0x24` | `-burn` | same |
-| Scrubber `+0x28` | `-toxic` | same |
-| Scrubber `+0x2c` | `-extinguishFire` | same |
-| Scrubber bitset bits 0–3 | `noNetworks`, `noFlora`, `dezone`, `single` | same |
-| Scrubber bitset bits 4–6 | `pauseSim`, `pauseSimHidden`, `pauseClock` | same |
-| Scrubber `+0x4c` | pause duration | same |
-| Scrubber `+0x30/+0x34` | `-message` arguments 1–2 | same |
-| Scrubber `+0x38` | `-blob`/`-rect` effect-map index (1–8) | same; consumed by `cSC4ScrubberEffect::AddBlobToMap`, `0x003E16F2` |
-| Scrubber `+0x3c` | value added to the selected effect map | same; `cSC4EffectMaps::AddRectToMap`, `0x0041A97C` |
-| Scrubber `+0x40/+0x44` | rectangle half-extents | parser and `cSC4ScrubberEffect::SetTransforms`, `0x003E109C` |
-| Scrubber `+0x48` | rounded map expansion/falloff count | `AddBlobToMap` and `AddRectToMap` |
-| Scrubber `+0x18` | demolition action/effect packed value | same; exact sub-bit semantics open |
-| Scrubber `+0x1c/+0x20` | `-minDemolishSize`/`-maxDemolishSize` | same |
-| Sequence bitset bits 0–2 | `loop`, `noOverlap`, `hardStart` | `cSequenceEffectCommand::Parse`, `0x00784724` |
-| Sequence item vector | `wait` and `play` timing values | `cSequenceWaitCommand::Parse`, `0x00784B26`; `cSequencePlayCommand::Parse`, `0x00784C08` |
-| Sequence item string | `play` effect name | same |
-| Sound bitset bit 0 (`+0x0c`) | no setter or runtime test found (`bit 0 (unused?)`) | `bitset<1>` stream overload `0x00768594`; reader `0x003E026E` |
-| Sound `+0x10` | `-name` resource key | `cGroupSoundCommand::Parse`, `0x0078CC8A`; passed to the sound system by `Start`, `0x003E0154` |
-| Sound `+0x14` | inverse `-locationUpdateRate` | same |
-| Sound `+0x18` | `-length` | same |
-| Camera bitset bits 0–3 | `zoom`, `rotation`, `target`, `slave` | `cGroupCameraCommand::Parse`, `0x0078B6B8`; all tested by `cSC4CameraEffect::Start`, `0x003DFBDA` |
-| Camera `+0x10` | zero-based zoom value | parser and `Start`; see parser discrepancy below |
-| Camera `+0x11` | runtime rotation value | `Start` passes it to `cSC4CameraControl::SetRotation` |
-| Camera `+0x14` | `attachRadius` | same |
-
-The scrubber action field is not reduced to guessed bit names: the parser
-combines `explode`, `createRubble`, `createBurntRubble`, and
-`demolishEffectID`, so the packed value must be retained as both raw bits and
-the known source options.
-
-The scrubber constructor (`0x003E13F4`) initializes map value `+0x3c` to
-`16.0`; the editor uses that value for new records. The sound constructor
-(`0x003DFE90`) similarly establishes `0.5` as the default stored update
-interval at `+0x14`. Sound flag bit 0 is still preserved and editable: the
-`unused?` label is negative evidence for this Mac build, not a reserved-bit
-claim.
-
-The Mac camera text parser has an internal inconsistency visible in the
-instructions at `0x0078B91E`: `rotation` sets flag bit 1 but stores its `0..3`
-argument in byte `+0x10`. Runtime `Start` instead reads rotation from `+0x11`,
-while using `+0x10` for zoom. Binary records therefore retain separate
-`zoom` and `rotation` bytes according to their runtime consumers; the editor
-does not model the parser's apparent erroneous write as union storage.
-
-### Effect child records
-
-`cSC4EffectsParser::ParseDescRecOptions` at `0x00401D2C` directly assigns:
-
-| DescriptionRec member | Text property | Notes |
-| --- | --- | --- |
-| `+0x08` bit 0 | `ignoreLength` / `respectLength` | `ignoreLength` sets it; `respectLength` clears it |
-| `+0x08` bit 1 | enclosing `systemSequence` block | set by `cGroupParticlesCommand::Parse`, `0x0078D6C4`; consumed by the model-particle chain path at `0x00406246` |
-| transform matrix at `+0x10` | `rotateX`, `rotateY`, `rotateZ`, `rotateXYZ`, `rotateZXY` | row-major 3×3 rotation matrix; angles are multiplied by `2π` |
-| `+0x34/+0x38/+0x3c` | `offset` | vector components |
-| `+0x40` | `scale` | transform flag is also updated |
-| `+0x44/+0x45` | `lod` / `lodRange` | low/high bytes; parser default is 1/6 |
-| `+0x46/+0x48` | particle `shells` count and per-shell geometry offset | `cGroupParticlesCommand::Parse`, `0x0078D6C4`; runtime creates `count` instances and applies `offset × shell index` as parameter `0x101` at `0x00406246` |
-| `+0x4c/+0x50` | `emitScale` minimum/maximum | one value supplies both |
-| `+0x54/+0x58` | `sizeScale` minimum/maximum | one value supplies both |
-| `+0x5c` | enclosing `select` group ID | assigned by `AddDescription`/`AddAnonDescription`; consumed by `UpdateVisualEffect`, `0x0040658E` |
-| `+0x5e` | `prob` | stored through the parser's 16-bit encoding |
-| `+0x60` | resolved component-description index | anonymous records receive it immediately; named records begin at `-1` and collection resolution fills it before runtime |
-
-`cGroupDynamicParticleCommand::Parse` at `0x00784148` creates this record,
-assigns its child name string, initializes the `+0x04` byte to `0x10` for
-this command path, and invokes the option parser. The byte is therefore
-parser-observed, but its complete enum is not yet established. The
-`cDescriptionRec` constructor (`0x0077AE3A`) confirms defaults of `1` shell,
-`16` shell delay, no selection group/probability, and description index `-1`.
+Section 1 starts with a `u32` record count. Each record has the following
+fields in the exact wire order.
 
 ### Particle records: direct command assignments
 
-The three leading serialized values are the descriptor's complete flag
-storage. `cSC4ParticlesDescriptionBase` constructs object offsets `+0x00`,
-`+0x04`, and `+0x08` as zero (`0x003F54DA`); the current writer
-(`0x003F5BD8`) emits them first and the current reader (`0x003F61AA`) reads
-them first, as `bitset<32>`, `bitset<8>`, and `bitset<11>`. The text parser's
-working descriptor begins at `cSC4EffectsParser +0x120`, so parser accesses at
-`+0x120/+0x124/+0x128` are the same three object members, not three unrelated
-parser flags.
+| Order | Type | Property | Known use |
+| ---: | --- | --- | --- |
+| 1 | `bitset<32>` | `flags_0` | Main particle option flags. See Behavior 1 Bits. |
+| 2 | `bitset<8>` | `flags_1` | Extra collision flags. See Behavior 2 Bits. |
+| 3 | `bitset<11>` | `flags_2` | Model, alignment, warp, and source flags. See Behavior 3 Bits. |
+| 4 | `Vec2` | `life` | Minimum and maximum particle life. |
+| 5 | `f32` | `emit_loop_interval` | Interval for emission `loop` or `single`. |
+| 6 | `u32` | `emit_loop_count` | Loop count. `single` writes `1`. |
+| 7 | `f32` | `preroll` | Value from the particle `life -preroll` option. We did not confirm its runtime effect. |
+| 8 | `Vec2` | `emit_delay` | Minimum and maximum emission delay. |
+| 9 | `Vec2` | `emit_trigger` | Minimum and maximum trigger or retrigger value. |
+| 10 | `Bounds3` | `emit_velocity_bounds` | Minimum and maximum initial velocity vector. |
+| 11 | `Vec2` | `emit_speed` | Minimum and maximum initial speed. |
+| 12 | `Bounds3` | `source_bounds` | Source region for point, square, cube, box, and related source modes. |
+| 13 | `f32` | `size_vary` | Random size variation. |
+| 14 | `f32` | `aspect_vary` | Random aspect variation. |
+| 15 | `f32` | `rotate_vary` | Random rotation variation. |
+| 16 | `f32` | `rotate_offset` | Initial rotation offset. |
+| 17 | `f32` | `alpha_vary` | Random alpha variation. |
+| 18 | `Vec3` | `color_vary` | Random variation of the three color components. |
+| 19 | `vector<f32>` | `emit_curve` | Shared storage for `emit`, `maintain`, or `inject`. The active flags select the mode. |
+| 20 | `vector<Vec3>` | `color_curve` | Particle color samples over life. |
+| 21 | `vector<f32>` | `alpha_curve` | Particle alpha samples over life. |
+| 22 | `vector<f32>` | `size_curve` | Particle size samples over life. The text parser multiplies input values by `50`. |
+| 23 | `vector<f32>` | `aspect_curve` | Particle aspect samples over life. |
+| 24 | `vector<f32>` | `rotate_curve` | Particle rotation samples over life. |
+| 25 | `u32` | `resource_key` | Texture or model resource identifier. Both modes share this field. |
+| 26 | `u8` | `draw_mode` | One-byte particle mode. Model parsing writes `3`. We do not know all values or the runtime purpose. `draw_mode` is an editor label. |
+| 27 | `u8` | `alignment_mode` | Particle alignment enum. |
+| 28 | `f32` | `sort_offset` | Draw sort offset for texture or model particles. |
+| 29 | `f32` | `stretch` | Travel-direction stretch divisor. Runtime code consumes this value. |
+| 30 | `Vec3` | `force` | Accumulated gravity and wind force. |
+| 31 | `f32` | `global_wind` | Global wind contribution. |
+| 32 | `f32` | `bomb` | Scalar from the force `-bomb` option. We did not confirm its full runtime effect. |
+| 33 | `Vec3` | `bomb_direction` | Vector from the force `-bomb` option. We did not confirm its full runtime effect. |
+| 34 | `f32` | `drag` | Motion drag. |
+| 35 | `f32` | `screw` | Screw or spiral force. |
+| 36 | `vector<Wiggle>` | `wiggles` | Wiggle and wiggle-direction operations. See the nested-record table. |
+| 37 | `f32` | `uv_scale` | Scalar from the warp `uv` option. |
+| 38 | `Vec2` | `uv_range` | Two values from the warp `uv` option. |
+| 39 | `Vec3` | `alpha_warp_direction` | Direction for alpha warp. |
+| 40 | `vector<f32>` | `alpha_warp_curve` | Alpha-warp curve samples. |
+| 41 | `f32` | `bounce` | Collision bounce. The parser default is `0.3`. |
+| 42 | `Vec2` | `terrain_repel` | First two `terrainRepel` values. |
+| 43 | `f32` | `scout` | `terrainRepel scout` value. |
+| 44 | `f32` | `vertical` | `terrainRepel vertical` value. |
+| 45 | `f32` | `kill_height` | `terrainRepel killHeight` value. |
+| 46 | `f32` | `collision_effect_or_death` | Shared storage for collision `effect` and `death`. These are not independent properties. |
+| 47 | `f32` | `death_by_water` | Collision `deathByWater` value. |
+| 48 | `Vec2` | `height_range` | Shared minimum and maximum range for `belowHeight`, `aboveHeight`, and `heightRange`. |
+| 49 | `string` | `terrain_name` | **Unknown.** The game reader confirms the wire string. We did not find a parser setter or runtime reader. The name is an editor label. |
+| 50 | `u16` | `value_164` | **Unknown.** We did not find a parser setter or runtime reader. Preserve this field. |
+| 51 | `u16` | `value_166` | **Unknown.** We did not find a parser setter or runtime reader. The constructor sets `1`. |
+| 52 | `f32` | `value_168` | **Unknown.** We did not find a parser setter or runtime reader. The constructor sets `1.0`. |
+| 53 | `Vec2` | `random_walk_delay` | Minimum and maximum random-walk delay. |
+| 54 | `Vec2` | `random_walk_strength` | Minimum and maximum random-walk strength. |
+| 55 | `Vec2` | `random_walk_turn` | Minimum and maximum random-walk turn value. |
+| 56 | `Vec3` | `prefer_direction` | Preferred random-walk direction. This field does not set `wait` or `preferSea`. |
+| 57 | `f32` | `alignment_damp` | Alignment damping. |
+| 58 | `Vec2` | `bank_range` | Alignment `bank` or `windBank` range. |
+| 59 | `vector<f32>` | `attractor_curve` | Shared curve for attractor and automata force options. |
+| 60 | `f32` | `attractor_strength` | Shared strength or rate for attractor and automata force options. The exact role depends on the option. |
+| 61 | `u32` | `automata_id` | Automaton occupant or type identifier used by the force runtime. |
+| 62 | `vector<TractorPoint>` | `tractor_points` | Points for `tractor` or `tractorRel`. See the nested-record table. |
+| 63 | `f32` | `tractor_reset_speed` | Reset or catch-up speed limit. Runtime uses it when a particle moves too far from the path. |
+| 64 | `vector<TimedEffect>` | `timed_effects` | Names and times of child effects that start during particle life. |
+| 65 | `f32` | `model_speed` | **Unknown.** This field is before the model-speed field. We did not find an independent parser or runtime use. |
+| 66 | `f32` | `model_speed_static` | Shared storage for text options `modelSpeed` and `modelSpeedStatic`. Preserve the preceding field as a separate wire value. |
+| 67 | `vector<u32>` | `model_keys` | Resource identifiers for random model selection. |
+| 68 | `f32` | `explosion` | Scalar from the force `explosion` option. |
+| 69 | `f32` | `explosion_front_secondary` | Secondary scalar from `explosionFront`. |
+| 70 | `vector<f32>` | `explosion_curve` | Explosion curve samples. |
+| 71 | `f32` | `explosion_front` | Main `explosionFront` value. |
 
-The complete parser-observed bit map is:
+Nested records have these fixed layouts:
 
-| Word | Bit | Text command/option that sets it |
-| --- | ---: | --- |
-| leading (`+0x00`, 32 bits) | 0 | `light` draw option |
-| | 1 | `emit` or `inject` (shared mode bit) |
-| | 2 | `maintain` |
-| | 3 | emission `sustain` |
-| | 4 | `noCull` draw option |
-| | 5 | emission `base` |
-| | 6 | source `model` |
-| | 7 | source `modelBase` |
-| | 8 | collision command present |
-| | 9 | collision `sticky` |
-| | 10 | `terrainRepel` |
-| | 11 | collision/source `killOutsideCity` |
-| | 12 | source `city` |
-| | 13 | source `cityWindySide` (also sets bit 12) |
-| | 14 | source `pinToTerrain` |
-| | 15 | source `pinToWater` |
-| | 16 | source height filter: `terrainOnly`, `waterOnly`, `seaOnly`, `lakeOnly`, `belowHeight`, `aboveHeight`, or `heightRange` |
-| | 17 | source `seaOnly` (with bit 16) |
-| | 18 | source `lakeOnly` (with bit 16) |
-| | 19 | emission `scale` |
-| | 20 | emission `areaScale` |
-| | 21 | emission `volumeScale` |
-| | 22 | source `scaleParticles` |
-| | 23 | random-walk command present |
-| | 24 | random-walk `wait` |
-| | 25 | random-walk `preferSea` |
-| | 26 | force `alphaAttractor` |
-| | 27 | force `motherDuck` |
-| | 28 | force `tractor` or `tractorRel` |
-| | 29 | texture `hflip` |
-| | 30 | texture `vflip` |
-| | 31 | timed child effect present |
-| second (`+0x04`, 8 bits) | 0 | collision `destroyBuildings` |
-| | 1-7 | no setter or runtime test found (`bit N (unused?)` in the editor) |
-| third (`+0x08`, 11 bits) | 0 | model command present |
-| | 1 | model `fakePerspective` |
-| | 2 | model `applyLighting` |
-| | 3 | model `moveEntireSlave` |
-| | 4 | model `slaveApplyAlpha`/`applyAlpha`, and force `alphaAttractor` (shared bit) |
-| | 5 | model `sustain` |
-| | 6 | model `modelSpeed` |
-| | 7 | alignment `windBank` |
-| | 8 | warp `wiggleVerts`, `uv`, or `alpha` (shared bit) |
-| | 9 | source `resetIncoming` |
-| | 10 | model `noCullFaces` |
-
-This table corrects three tempting but false presence correlations. `inject`
-sets leading bit 1, not bit 3; bit 3 is `sustain`. Random-walk `preferDir`
-writes `+0x184` but does not set bits 24 or 25. Plain `wiggle`/`wiggleDir`
-and generic alignment do not set third bits 8 and 7; those bits are specific
-to the options listed above.
-
-Runtime cross-references support the word identities and the active meanings:
-the `cSC4ParticlesEffect` methods test the leading word throughout emission,
-source, collision, random-walk, force, and rendering paths. In particular,
-`UpdateParticlePhysicsExtra` (`0x00417DC8`) tests second-word bit 0 before the
-building-destruction path. Across the traced particle runtime methods, no test
-of second-word bits 1-7 was found. This is strong evidence that bit 0 is the
-only active middle-word flag in this build, while `unused?` remains a qualified
-editor label rather than a claim that those serialized positions can never be
-used by another build.
-
-The following are source-to-member correlations only. They are intentionally
-phrased using command names where no independent binary semantic has been
-established.
-
-| Particle member | Text parser assignment | Parser evidence |
+| Record | Wire layout | Description |
 | --- | --- | --- |
-| leading bitset bit 10 | terrain-repel command present | `cParticleTerrainRepelCommand::Parse`, `0x0077FFD4` |
-| `+0x0c/+0x10` | `life` minimum/maximum | `cParticleLifeCommand::Parse`, `0x0077E104` |
-| `+0x1c` | `preroll` | same |
-| `+0x68` | `size` `vary` value | `cParticleSizeCommand::Parse`, `0x00786304` |
-| `+0x6c` | `aspect` `vary` value | `cParticleAspectCommand::Parse`, `0x00786416` |
-| `+0x70` | `rotate` `vary` value | `cParticleRotateCommand::Parse`, `0x00786516` |
-| `+0x74` | `rotate` `offset` value | same |
-| `+0x88` vector | `emit` rate, `maintain`, or `inject` value | `0x0078667C`, `0x00785E28`, `0x00785F28` |
-| leading bitset bits 1–3 | shared `emit`/`inject`, `maintain`, `sustain` | emit/maintain/inject handlers |
-| `+0xac` vector | size-over-time command values | command dispatch; exact normalization still open |
-| `+0xb8` vector | aspect-over-time command values | same |
-| `+0xc4` vector | rotate-over-time command values | same |
-| `+0xd0` | texture resource key | `cParticleTextureCommand::Parse`, `0x00785C30` |
-| leading bitset bits 29–30 | `hflip`, `vflip` | same |
-| `+0x13c/+0x140` | first two terrain-repel values | `cParticleTerrainRepelCommand::Parse` |
-| `+0x144` | `scout` | same |
-| `+0x148` | `vertical` | same |
-| `+0x14c` | `killHeight` | same |
-| `+0x16c/+0x170` | random-walk `delay` minimum/maximum | `cParticleRandomWalkCommand::Parse`, `0x0077FC62` |
-| `+0x174/+0x178` | random-walk `strength` minimum/maximum | same |
-| `+0x17c/+0x180` | random-walk `turn` minimum/maximum | same |
-| leading bitset bits 23–25 | random-walk present, `wait`, `preferSea` | same |
-| `+0x184` | random-walk `preferDir` | same |
-| `+0x1c4` vector | timed child effect data | `cParticleTimedEffectCommand::Parse`, `0x00784FA6` |
-| leading bitset bit 31 | timed child effect present | same |
+| `Wiggle` | `f32`, `Vec3`, `Vec3` | One 28-byte warp record. `wiggle` and `wiggleDir` fill the fields differently. Do not give one fixed meaning to all components. |
+| `TractorPoint` | `Vec3 position`, `Vec3 tangent`, `f32 start_time`, `f32 end_time` | One 32-byte tractor path record. Runtime code uses Hermite interpolation for position and velocity. |
+| `TimedEffect` | `string effect_name`, `f32 time` | Starts the named child effect at the stored time. |
 
-Further command handlers fill the previously anonymous particle members:
+Curve vectors store sample values. The wire data does not store a time value
+for each sample. Runtime code samples several curves with normalized particle
+life. If the table does not give a unit, we do not know the exact unit.
 
-| Particle member | Text parser correlation | Parser evidence |
-| --- | --- | --- |
-| `+0x78` | alpha `vary` value | `cParticleAlphaCommand::Parse`, `0x0078A3BC` |
-| `+0x94` vector | color curve values | `cParticleColorCommand::Parse`, `0x0078A538` |
-| `+0x7c` | color `vary` vector | same |
-| `+0xa0` vector | alpha curve values | `cParticleAlphaCommand::Parse` |
-| leading bitset bit 8 | collision command present | `cParticleCollisionCommand::Parse`, `0x0078A790` |
-| leading bitset bit 9 | collision `sticky` | same |
-| leading bitset bit 11 | collision/source `killOutsideCity` | same; shared bit is not assigned a single meaning |
-| `+0x138` | collision `bounce` | same |
-| `+0x150` | collision `effect`/`death` value | same; the two source options share the member |
-| `+0x154` | collision `deathByWater` | same |
-| second bitset bit 0 | collision `destroyBuildings` | same |
-| `+0xd5` | alignment enum | `cParticleAlignmentCommand::Parse`, `0x0078AA74` |
-| `+0x190` | alignment `damp` | same |
-| `+0x194/+0x198` | alignment `bank`/`windBank` range | same |
-| third bitset bit 7 | alignment `windBank` mode | same |
-| `+0xd0` | model resource key | `cParticleModelCommand::Parse`, `0x0078AC9E` |
-| `+0xd4` | model draw-option byte; parser writes `3` | same; enum not established |
-| `+0x1d4` | `modelSpeed`/`modelSpeedStatic` | same |
-| `+0x1d8` vector | multiple model resource keys | same |
-| third bitset bits 1–6, 10 | model options: `fakePerspective`, `applyLighting`, `moveEntireSlave`, `slaveApplyAlpha`, `sustain`, model speed, `noCullFaces` | same |
-| `+0xe0` vector | accumulated `gravity`/`wind` force | `cParticleForceCommand::Parse`, `0x0078710C` |
-| `+0xec` | `global_wind` | same |
-| `+0xf0` | `bomb` scalar | same |
-| `+0xf4` vector | `bomb` direction | same |
-| `+0x100` | `drag` | same |
-| `+0x104` | `screw` | same |
-| `+0x19c` vector | attractor/automata curve values | same; several options share this storage |
-| `+0x1a8` | attractor/automata strength or rate value | same; exact runtime role remains open |
-| `+0x1b0` vector | `tractor`/`tractorRel` points | same |
-| `+0x1bc` | `tractorResetSpeed` | same |
-| leading bitset bit 28 | tractor command present | same |
-| `+0x1e4` | `explosion` scalar | same |
-| `+0x1e8` | `explosionFront` secondary scalar | same |
-| `+0x1ec` vector | explosion curve values | same |
-| `+0x1f8` | `explosionFront` value | same |
-| `+0x108` vector | `wiggle`/`wiggleDir` records | `cParticleWarpCommand::Parse`, `0x007880EC` |
-| third bitset bit 8 | `wiggleVerts`, `uv`, and alpha warp mode | same; shared mode bit |
-| `+0x114` | `uv` scalar | same |
-| `+0x118` | `uv` vector | same |
-| `+0x120` | `alpha` warp direction | same |
-| `+0x12c` vector | alpha warp curve values | same |
-| `+0x50` bounding box | particle source region | `cParticleSourceCommand::Parse`, `0x0077F0D6` |
-| `+0x158` vector | source `belowHeight`/`aboveHeight`/`heightRange` | same; source options share the range |
-| leading bitset bits 12–13 | source `city`/`cityWindySide` | same |
-| leading bitset bits 14–18 | `pinToTerrain`, `pinToWater`, terrain/water restriction, `seaOnly`, `lakeOnly` | same |
-| leading bitset bit 22 | `scaleParticles` | same |
-| third bitset bit 9 | `resetIncoming` | same |
-| `+0x14/+0x18` | emission `loop`/`single` values | `cParticleEmitCommand::Parse`, `0x0078667C` |
-| `+0x20/+0x24` | emission `delay` range | same |
-| `+0x28/+0x2c` | emission `trigger`/`retrigger` range | same |
-| `+0x30` bounding box | emission `velocity` region | same |
-| `+0x48/+0x4c` | emission speed minimum/maximum | same |
-| leading bitset bits 19–21 | emission `scale`, `areaScale`, `volumeScale` | same |
-| `+0xd8` | draw `sortOffset` | `(anonymous namespace)::ParseDrawOptions`, `0x004018F0` |
-| `+0xdc` | particle `stretch` divisor | `cParticleStretchCommand::Parse`, `0x0077DEAA`; consumed by `cSC4ParticlesEffect::InitEffectsParticle`, `0x004182A4` |
-| `+0x1ac` | force `automata` occupant/type id | `cParticleForceCommand::Parse`, `0x0078710C`; consumed by `cSC4ParticlesEffect::UpdateAttractor`, `0x0041583E` |
+### Behavior 1 Bits (`flags_0`)
 
-Additional particle constraints from the traced handlers:
+Bit numbers in this page start at zero.
 
-- leading bitset-0 bits 6 and 7 select `model` and `modelBase` source modes;
-  bits 12 and 13 select `city` and `cityWindySide`. The source handler also
-  distinguishes `point`, `square`, `quad`, `cube`, `box`, and `dice` forms and
-  writes the source-region members accordingly (`cParticleSourceCommand::Parse`,
-  `0x0077F0D6`);
-- `+0xd0` is a mode-dependent resource key: texture and model commands share
-  this storage, so it is not two independent keys;
-- the model command sets third-bitset bit 0 for model presence, bit 2 for
-  lighting, bit 3 for moving an entire slave, bit 4 for applying alpha, bit 5
-  for sustain, bit 6 for model-speed presence, and bit 10 for no-cull-faces.
-  `modelSpeed` and `modelSpeedStatic` use the same model-speed storage
-  (`cParticleModelCommand::Parse`, `0x0078AC9E`);
-- the collision parser supplies a default bounce of `0.3` when omitted,
-  clamps `death` and `deathByWater` through `[0,1]`, and stores `effect` and
-  `death` in the same scalar at `+0x150` (`cParticleCollisionCommand::Parse`,
-  `0x0078A790`);
-- the text parser multiplies size-curve inputs by `50` before storing the
-  `+0xac` curve (`cParticleSizeCommand::Parse`, `0x00786304`). This is a
-  parser-unit transform, not proof of the engine's semantic unit.
+| Bit | Text option or runtime use |
+| ---: | --- |
+| 0 | `light` draw option |
+| 1 | `emit` or `inject`; shared mode bit |
+| 2 | `maintain` |
+| 3 | emission `sustain` |
+| 4 | `noCull` draw option |
+| 5 | emission `base` |
+| 6 | source `model` |
+| 7 | source `modelBase` |
+| 8 | collision command is present |
+| 9 | collision `sticky` |
+| 10 | `terrainRepel` is present |
+| 11 | collision or source `killOutsideCity`; shared bit |
+| 12 | source `city` |
+| 13 | source `cityWindySide`; also sets bit 12 |
+| 14 | source `pinToTerrain` |
+| 15 | source `pinToWater` |
+| 16 | a source height or water filter is present |
+| 17 | source `seaOnly`; also uses bit 16 |
+| 18 | source `lakeOnly`; also uses bit 16 |
+| 19 | emission `scale` |
+| 20 | emission `areaScale` |
+| 21 | emission `volumeScale` |
+| 22 | source `scaleParticles` |
+| 23 | `randomWalk` is present |
+| 24 | random-walk `wait` |
+| 25 | random-walk `preferSea` |
+| 26 | force `alphaAttractor` |
+| 27 | force `motherDuck` |
+| 28 | force `tractor` or `tractorRel` |
+| 29 | texture `hflip` |
+| 30 | texture `vflip` |
+| 31 | a timed child effect is present |
 
-These observations explain the complete three-word particle flag map plus more
-of the descriptor's mode sharing and normalization. Bounding boxes and several
-shared curve/force members remain raw until runtime consumers are traced.
+### Behavior 2 Bits (`flags_1`)
 
-Only three scalar particle placeholders remain: `u16 +0x164`, `u16 +0x166`,
-and `f32 +0x168`. The constructor (`0x003F54DA`) initializes them to `0`, `1`,
-and `1.0`; assignment and binary read/write paths copy or serialize them, but
-no text-parser setter or read in the traced `cSC4ParticlesEffect` runtime
-methods was found. The editor consequently keeps the stable offset names and
-shows `value_164 (unused?)`, `value_166 (unused?)`, and
-`value_168 (unused?)`. This is deliberately qualified negative evidence, not
-permission to discard their wire values.
+| Bit | Text option or runtime use |
+| ---: | --- |
+| 0 | collision `destroyBuildings` |
+| 1 to 7 | **Unknown.** We did not find a parser setter or runtime test in the shipped builds. Preserve these bits. |
 
-### Major-4 dynamic-particle descriptor
+### Behavior 3 Bits (`flags_2`)
 
-The major-4 `cSC4DynamicParticleDescription` has a smaller, separate
-working object. The traced parser writes these members:
+| Bit | Text option or runtime use |
+| ---: | --- |
+| 0 | a model command is present |
+| 1 | model `fakePerspective` |
+| 2 | model `applyLighting` |
+| 3 | model `moveEntireSlave` |
+| 4 | model `slaveApplyAlpha` or `applyAlpha`, and force `alphaAttractor`; shared bit |
+| 5 | model `sustain` |
+| 6 | model speed is present |
+| 7 | alignment `windBank` |
+| 8 | warp `wiggleVerts`, `uv`, or `alpha`; shared mode bit |
+| 9 | source `resetIncoming` |
+| 10 | model `noCullFaces` |
 
-| Member | Text parser correlation | Parser evidence |
-| --- | --- | --- |
-| `+0x0c` string | `base` command name | `cDynamicParticleEffectBaseCommand::Parse`, `0x0078A0AC` |
-| `+0x10` | `mass` | `cDynamicParticleMassCommand::Parse`, `0x00789DA6` |
-| `+0x18/+0x1c` | friction minimum/maximum | `cDynamicParticleFrictionCommand::Parse`, `0x00789C74` |
-| `+0x20` | friction `angular` value | same |
-| `+0x28` | one model resource key | `cDynamicParticleModelCommand::Parse`, `0x00789E54` |
-| `+0x2c` vector | multiple model resource keys | same |
+After all particle records, the file stores the `u16` particle/decal marker.
+The current game writer writes `1`.
 
-`cDynamicParticleEffectCommand::RegisterCommands` at `0x007834EA` confirms
-that the only nested command families are `effectBase`, `model`, `mass`, and
-`friction`. Its top-level parser at `0x0078A162` constructs a fresh descriptor
-(thereby applying the `1.0` mass default), optionally inherits a named base
-descriptor, and resolves its name.
+## Section 2 - Decal Descriptions
 
-The runtime roles of the named fields are confirmed by
-`cSC4DynamicParticleEffect::SetDescription` (`0x004B91A8`) and `Start`
-(`0x004BA6B0`). `SetDescription` chooses one model key uniformly from the
-vector when multiple keys are present, otherwise it uses the scalar key. It
-also derives the optional collision child-effect name with the
-`"%s_collide"` suffix.
-
-`Start` builds a `cSC4RigidBodySimulator2D::ObjectDesc`. Positive mass is
-stored in that object as reciprocal mass; zero or negative mass uses the
-sentinel `1e6`. Friction minimum, maximum, and angular values at
-`+0x18/+0x1c/+0x20` are copied directly, and the physics friction path is
-enabled when any of the three is positive. The resulting rigid-body particle
-is then used as the transform target for the optional base/collision visual
-effect.
-
-The seven-bit word at `+0x08` is serialized and copied by descriptor
-assignment, but none of the four direct parser handlers assigns it. The
-runtime descriptor consumers `cSC4DynamicParticleEffect::SetDescription`
-(`0x004B91A8`) and `Start` (`0x004BA6B0`) use the base name, model keys, mass,
-and friction values without reading `+0x08`. Package evidence agrees: all
-three dynamic-particle records in the vanilla
-`EA5118B0-EA5118B1-00000001` resource have a zero flag word (`p_vehicle`,
-`p_train`, and `p_train_toxic`). Therefore bits 0-6 are best classified as
-serialized but unconsumed/reserved-looking in this build, not as named
-options. The editor preserves them and intentionally presents qualified
-`bit N (unused?)` labels. The floats at `+0x14` and `+0x24` have the same
-zero-in-vanilla and unconsumed status and are shown as `value_14 (unused?)`
-and `value_24 (unused?)`. Neither appears in the rigid-body object assembled
-by `Start`; this is direct negative evidence from the core creation path, not
-just absence from the text parser.
+The old name for this section was "Terrain Dependent FSHs." The actual
+record is `cSC4DecalDescription`. It draws an animated terrain or water
+overlay.
 
 ### Decal descriptor
 
-The decal child handlers also resolve most of the anonymous vector members.
-The following offsets use the decal working-object base at parser offset
-`+0x370`, which matches the serialized object layout:
+| Order | Type | Property | Known use |
+| ---: | --- | --- | --- |
+| 1 | `bitset<7>` | `flags` | Decal modes. See the flag table. |
+| 2 | `u32` | `texture_key` | Texture resource identifier. Runtime code creates the overlay from this value. |
+| 3 | `u8` | `draw_mode` | Draw value that runtime passes to the overlay manager. We do not know all numeric values. |
+| 4 | `u8` | `repeat_mode` | `1` loops. `2` stops at the end. `3` sustains at the end. The game reader changes a stored `0`. |
+| 5 | `f32` | `life` | Decal life. Runtime code uses its reciprocal as the playback rate. |
+| 6 | `vector<f32>` | `rotation` | Rotation samples over normalized life. |
+| 7 | `vector<f32>` | `size` | Size samples over normalized life. |
+| 8 | `vector<f32>` | `alpha` | Alpha samples over normalized life. |
+| 9 | `vector<Vec3>` | `color` | Color samples over normalized life. |
+| 10 | `vector<f32>` | `aspect` | Aspect samples over normalized life. |
+| 11 | `f32` | `alpha_vary` | Random alpha variation. |
+| 12 | `f32` | `size_vary` | Random size variation. |
+| 13 | `f32` | `rotate_vary` | Random rotation variation. |
+| 14 | `f32` | `texture_repeat` | Repeat-geometry size value used when flag bit 3 is set. |
+| 15 | `Vec2` | `texture_offset` | Offset copied into overlay geometry. |
 
-| Member | Text parser correlation | Parser evidence |
-| --- | --- | --- |
-| `+0x04` | texture resource key | `cDecalTextureCommand::Parse`, `0x00785890` |
-| `+0x08` | `draw` enum | same |
-| `+0x00` bits 1, 2, 3, 5 | `light`, `water`, `repeat`, `ring` | same |
-| `+0x5c` | texture `offset` vector | same |
-| `+0x58` | texture `repeat` value | same |
-| `+0x0c` | `life` value | `cDecalLifeCommand::Parse`, `0x0078017C` |
-| `+0x00` bit 6 | decal `static` | same |
-| `+0x09` | `static`/`loop`/`single`/`sustain` mode: 1/1/2/3 | same |
-| `+0x10` vector | rotate command values | `cDecalRotateCommand::Parse`, `0x007889A0` |
-| `+0x1c` vector | size command values | `cDecalSizeCommand::Parse`, `0x007887CC` |
-| `+0x28` vector | alpha command values | `cDecalAlphaCommand::Parse`, `0x0078977C` |
-| `+0x34` vector | color command values | `cDecalColorCommand::Parse`, `0x007898F8` |
-| `+0x40` vector | aspect command values | `cDecalAspectCommand::Parse`, `0x00788910` |
-| `+0x4c` | alpha `vary` value | same |
-| `+0x50` | size `vary` value | same |
-| `+0x54` | rotate `vary` value | same |
-| `+0x00` bit 4 | size `cityScale` | `cDecalSizeCommand::Parse` |
+| Flag bit | Meaning |
+| ---: | --- |
+| 0 | **Unknown.** Core decal runtime code does not test this bit. |
+| 1 | Use the lit overlay path. |
+| 2 | Use the water overlay manager. |
+| 3 | Use repeated geometry. |
+| 4 | Use city-scale geometry. |
+| 5 | Create ring geometry. |
+| 6 | Use the static-overlay path. |
 
-The decal constructor initializes a useful new-record template: life `5.0`,
-rotate curve `[0.0]`, size curve `[1.0]`, alpha curve `[1.0]`, color curve
-`[white]`, aspect curve `[1.0]`, zero variation values, final scalar `1.0`,
-and zero offset (`cSC4DecalDescription::cSC4DecalDescription`, `0x007600D2`).
-These are constructor defaults, not universal semantic defaults. The reader's
-zero-repeat normalization remains significant: a zero second byte becomes `2`
-and sets bit 6 (`0x0076270E`).
+The reader has a compatibility rule. If the stored `repeat_mode` is `0`, the
+game uses mode `2` and sets flag bit 6 in memory. A lossless editor must keep
+the stored `0` and the original flags unless the user changes them.
 
-The symbolized runtime closes the parser-only provenance for these fields.
-`cSC4DecalEffect::SetDescription` (`0x0041318E`), `Start` (`0x00412B26`),
-`Update` (`0x004127FA`), and `SetTransforms` (`0x00412F4A`) consume the copied
-descriptor as follows:
+After all decal records, the file stores the `u16` decal/shake marker. The
+current game writer writes `0`.
 
-| Descriptor member | Runtime use |
-| --- | --- |
-| `+0x04` texture key | creates the overlay/decal binding |
-| `+0x08` draw enum | passed to the overlay manager after creation |
-| `+0x09` mode | `1` loops, `2` stops at the end, `3` sustains at the end |
-| `+0x0c` life | converted to reciprocal playback rate |
-| `+0x10` rotate curve / `+0x54` variation | orientation over normalized life with a randomized offset |
-| `+0x1c` size curve / `+0x50` variation | decal size over normalized life with a randomized multiplier |
-| `+0x28` alpha curve / `+0x4c` variation | opacity over normalized life with a randomized multiplier |
-| `+0x34` color curve | overlay color over normalized life |
-| `+0x40` aspect curve | overlay aspect over normalized life |
-| `+0x58` repeat value | repeated-decal sizing path selected by bit 3 |
-| `+0x5c` offset | copied into the overlay geometry passed to the manager |
+## Section 3 - Screen Shake
 
-The same runtime methods test every parser-named flag: bit 1 enables the lit
-overlay path, bit 2 selects the water overlay manager, bit 3 selects repeated
-geometry, bit 4 initializes a city-sized transform, bit 5 selects ring
-creation, and bit 6 selects the static-overlay path. No test of bit 0 occurs in
-these core descriptor consumers. It should therefore remain `bit 0 (unused?)`
-for this build rather than receiving an invented name. The draw enum is
-definitely consumed, but its complete numeric domain remains open.
+This collection contains `cSC4ShakeDescription` records.
 
 ### Shake descriptor
 
-The shake parser's working object begins at parser offset `+0x3e0`, matching
-the six serialized members:
+| Order | Type | Property | Known use |
+| ---: | --- | --- | --- |
+| 1 | `f32` | `length` | Total shake length. Runtime code normalizes elapsed time by this value. |
+| 2 | `f32` | `fade` | Stop-tail length. A zero value stops immediately. A nonzero value lets the final part of the amplitude curve run. |
+| 3 | `vector<f32>` | `amplitude` | Amplitude samples over normalized time. |
+| 4 | `vector<f32>` | `frequency` | Frequency samples over normalized time. |
+| 5 | `f32` | `aspect` | Scales the two screen axes in opposite directions. |
+| 6 | `u8` | `base_table` | `0` selects a fixed random two-axis table. `1` selects a sine table on one axis. We did not confirm other values. |
 
-| Member | Text parser correlation | Parser evidence |
-| --- | --- | --- |
-| `+0x00` | `length` | `cShakeLengthCommand::Parse`, `0x0077DF20` |
-| `+0x04` | length `fade` | same |
-| `+0x08` vector | `amplitude` values | `cShakeAmplitudeCommand::Parse`, `0x00788AA0` |
-| `+0x14` vector | `frequency` values | `cShakeFrequencyCommand::Parse`, `0x00788B30` |
-| `+0x20` | `aspect` | `cShakeAspectCommand::Parse`, `0x0077E008` |
-| `+0x24` | `baseTable` enum | `cShakeBaseTableCommand::Parse`, `0x0077E07E` |
+The text parser clamps `fade` to `length`. Runtime code reduces an epicentered
+shake by distance and zoom. The shake event path does not use the Section 12
+event float. We did not confirm the radius source.
 
-The length parser clamps fade to length when a larger fade is supplied
-(`cShakeLengthCommand::Parse`, `0x0077DF20`). `aspect` is parsed as a float,
-whereas `baseTable` is parsed through the executable's
-`kShakeBaseTableTypes` enum table; it is not an arbitrary numeric curve. The
-constructor starts both amplitude and frequency vectors empty
-(`cSC4ShakeDescription::cSC4ShakeDescription`, `0x0075E1F0`).
+After all shake records, the file stores the `u16` shake/light marker. The
+current game writer writes `0`.
 
-The runtime consumer is now matched in both executables:
+## Section 4 - Saturation and Lightness
 
-| Role | Symbolized Mac | Windows 1.1.641 |
-| --- | --- | --- |
-| accumulate shake offsets | `cSC43DRender::SetShakeOffsets` `0x00507A20` | `0x007C86D0` |
-| start from a descriptor | `cSC43DRender::StartScreenShake` `0x00507F8C` | `0x007CACD0` |
-| stop by handle | `cSC43DRender::StopScreenShake` `0x00505626` | `0x007C8630` |
-| read final pixel offsets | `cSC43DRender::GetShakeOffsets` `0x00503478` | `0x007C2330` |
-
-Both builds perform the same calculation. Elapsed time is divided by
-`length`; that normalized time samples the amplitude and frequency curves.
-Frequency advances a persistent phase through a 64-entry base table.
-`baseTable = 0` selects a deterministic random two-axis table seeded with
-`0x58`; `baseTable = 1` selects `sineY`, whose X samples are zero. Aspect
-scales the two axes reciprocally: X uses `amplitude / aspect`, while Y uses
-`amplitude * aspect`.
-
-An epicentered shake is attenuated by
-`1 - distanceSquared / radiusSquared` and discarded outside the radius. The
-combined offset is additionally multiplied by `0.6^(4 - zoomLevel)` before
-being rounded to integer screen pixels. `fade` is not sampled as another
-curve. Stopping a shake with nonzero fade advances its effective elapsed time
-to `length - fade`, allowing the tail of the existing amplitude curve to run;
-zero fade removes it immediately.
+This collection contains `cSC4LightDescription` records. A Section 12 event
+can use one record as a screen flash or as a lighting tint.
 
 ### Light descriptor
 
-The light working object begins at parser offset `+0x414`:
+| Order | Type | Property | Known use |
+| ---: | --- | --- | --- |
+| 1 | `vector<Vec3>` | `color` | Color samples over normalized time. |
+| 2 | `vector<f32>` | `strength` | Strength samples over normalized time. A negative flash strength selects subtractive rendering. |
+| 3 | `f32` | `length` | Total duration. Runtime code normalizes elapsed time by this value. |
 
-| Member | Text parser correlation | Parser evidence |
-| --- | --- | --- |
-| `+0x00` vector | `color` values | `cLightColorCommand::Parse`, `0x00789148` |
-| `+0x0c` vector | `strength` values | `cLightStrengthCommand::Parse`, `0x00788C86` |
-| `+0x18` | `length` | `cLightLengthCommand::Parse`, `0x0077DB2A` |
+The light record has no fade field. The text spelling `light length -fade`
+writes to the shake work area because of a parser defect. That fade value is
+not in the binary light record.
 
-The light constructor starts the color and strength vectors empty and sets
-length to `2.0` (`cSC4LightDescription::cSC4LightDescription`, `0x00760A72`).
-The color handler parses each input as a color vector and the strength handler
-parses each input as a float curve (`0x00789148`, `0x00788C86`). These are
-variable-length vectors on the wire, not fixed-size color/strength scalars.
-The parser also has an explicit byte-range color scaling path; the editor
-should preserve that as a command transform rather than bake it into the
-binary field's name.
+## Section 5 - Brush Descriptions
 
-The light runtime is also cross-binary matched:
+The old name was "Brush (Cursor) Exemplars (Terrain Modelling)." This
+collection contains `cSC4BrushDescription` records. Each record starts with
+its own `u16` marker. The current writer writes `0`.
 
-| Runtime path | Symbolized Mac | Windows 1.1.641 |
-| --- | --- | --- |
-| lighting tint update | `cSC4EffectsManager::UpdateLightingTint` `0x00404884` | `0x0058EC40` |
-| screen flash draw | `cSC4EffectsManager::DrawScreenFlashes` `0x00404924` | `0x0058E870` |
+### Component records
 
-Both use `elapsed / length` as normalized time and independently sample the
-color and strength curves. The tint path passes the sampled pair to the
-lighting manager and resets the tint after completion. The flash path uses the
-sampled color as its screen overlay color. Positive strength is clamped to
-`1.0` for overlay alpha; negative strength selects a separate subtractive
-render state and uses `-strength` as alpha.
+| Order | Type | Property | Known use |
+| ---: | --- | --- | --- |
+| 1 | `u16` | `marker` | Record marker. Writer value `0`. We do not know its independent purpose. |
+| 2 | `u32` | `key` | Resource identifier from brush `-name`. |
+| 3 | `f32` | `rate` | Brush `-rate` value. The `-apply` form can also write this storage. |
+| 4 | `f32` | `length` | Brush `-length` value. |
+| 5 | `u8` | `mode` | Apply mode from `-apply`. We do not know all values. |
+| 6 | `u32` | `zoom` | Stored zoom is the text zoom minus one. |
+| 7 | `Vec2` | `strength` | Minimum and maximum brush strength. |
+| 8 | `Vec2` | `width` | Minimum and maximum brush width. |
+| 9 | `f32` | `level` | Brush `-level` value. |
 
-Epicentered flashes apply the same radial
-`1 - distanceSquared / radiusSquared` falloff and `0.6`-per-zoom-step
-attenuation as screen shake. The `light length -fade` spelling has a parser
-bug in this build: `cLightLengthCommand::Parse` (`0x0077DB2A`) writes the
-`-fade` value to the shake working descriptor at parser `+0x3e4`, not to
-the light descriptor at `+0x414`. Only the primary length at light `+0x18`
-is serialized or consumed by the light runtime.
+## Section 6 - Attractor Descriptions
 
-The names `size-over-time` and similar are deliberately tied to the parser
-command that fills the vector, not asserted as engine behavior. Several
-Particle members still without a direct text assignment are explicitly
-qualified in their descriptor sections rather than treating the now-decoded
-DescriptionRec transform as opaque.
+The old name was "LUA Occupant Groups, Generators, and Attractors." This
+collection contains `cSC4AttractorDescription` records.
 
-### Records not yet source-mapped
+| Order | Type | Property | Known use |
+| ---: | --- | --- | --- |
+| 1 | `u16` | `marker` | Record marker. Writer value `0`. We do not know its independent purpose. |
+| 2 | `string` | `name` | Name from `-name` or occupant group from `-group`. |
+| 3 | `u8` | `selector` | `0` is the `-name` form. `1` is the `-group` form. We did not confirm other values. |
 
-Shake, light, and decal now have parser, wire, and runtime correlations above.
-The named major-4 dynamic-particle fields now reach the rigid-body creation
-path. Its floats at object offsets `+0x14` and `+0x24` and its seven-bit word
-are compatibility storage with no active meaning in the paired shipped runtimes:
-the constructor zeroes them, assignment and stream operators preserve them,
-the dynamic-particle block registers only `effectBase`, `model`, `mass`, and
-`friction`, and the complete effect vtable never reads them. All three vanilla
-dynamic-particle descriptors also store zero in all three members. Windows
-1.1.641 independently agrees: the matched `Start` at `0x00585190` consumes
-mass at object `+0x18` and friction at `+0x20/+0x24/+0x28`, skipping the
-compatibility floats at Windows `+0x1c/+0x2c` and the flag word. They remain
-editable raw fields so non-vanilla data can round-trip without loss. The
-complete decal draw-enum domain and the purpose (if any) of decal flag bit 0
-remain open. Particle members without
-a traced command assignment remain raw. None of these gaps should be filled
-from the Wiki or from the existing text-format documentation alone.
+The selector is one byte. It is not a `u32`.
 
-## Evidence and next decoder boundary
+## Section 7 - Scrubber Descriptions
 
-Primary evidence:
+The old name was "Destructive Effect Properties." This collection contains
+`cSC4ScrubberDescription` records. Scrubbers can demolish or burn objects,
+send messages, change effect maps, and pause the simulation.
 
-- Ghidra `cSC4EffectsResource::Read`: `0x003DDA9C`
-- Ghidra `cSC4EffectsResource::Write`: `0x003DE3DA`
-- Ghidra component serializers in the `0x003DF...`–`0x003E2...` range
-- DBPF MCP inspection of the vanilla `SimCity_1.dat` entry
+| Order | Type | Property | Known use |
+| ---: | --- | --- | --- |
+| 1 | `u16` | `marker` | Record layout marker. Writer value `1`. If nonzero, fields 17 and 18 are present. |
+| 2 | `bitset<7>` | `flags` | Scrubber option flags. See the flag table. |
+| 3 | `u32` | `value_10` | **Unknown.** We did not find a parser setter or runtime reader. |
+| 4 | `u32` | `demolish` | Value from `-demolish`. |
+| 5 | `u32` | `action` | Packed demolition action/effect value. `explode`, `createRubble`, `createBurntRubble`, and `demolishEffectID` share this field. We do not know all sub-bits. |
+| 6 | `f32` | `min_size` | Minimum demolition size. |
+| 7 | `f32` | `max_size` | Maximum demolition size. |
+| 8 | `u32` | `burn` | Value from `-burn`. |
+| 9 | `u32` | `message_1` | First `-message` argument. We confirmed the parser mapping. We do not know the full runtime purpose. |
+| 10 | `u32` | `message_2` | Second `-message` argument. We confirmed the parser mapping. We do not know the full runtime purpose. |
+| 11 | `u32` | `map_index` | Effect-map selector for `-blob` or `-rect`. The parser uses values `1` through `8`. |
+| 12 | `f32` | `map_value` | Value added to the selected effect map. The constructor default is `16.0`. |
+| 13 | `Vec2` | `map_half_extents` | Rectangle half-extents. |
+| 14 | `f32` | `map_spread` | Rounded expansion or falloff count for map changes. |
+| 15 | `f32` | `pause_duration` | Duration for a pause option. |
+| 16 | - | Conditional tail | The next two fields exist only when `marker` is not zero. |
+| 17 | `u32` | `toxic` | Value from `-toxic`. |
+| 18 | `u32` | `extinguish_fire` | Value from `-extinguishFire`. |
 
-The minimum useful editor architecture is therefore:
+| Flag bit | Meaning |
+| ---: | --- |
+| 0 | `noNetworks` |
+| 1 | `noFlora` |
+| 2 | `dezone` |
+| 3 | `single` |
+| 4 | `pauseSim` |
+| 5 | `pauseSimHidden` |
+| 6 | `pauseClock` |
 
-1. decode DBPF/QFS as a separate container layer;
-2. decode this resource spine with bounded readers and preserve unknown
-   members byte-for-byte;
-3. expose semantic names only for fields confirmed against text parsing,
-   runtime behavior, or controlled game-generated write/read pairs.
+The conditional fields occur at the end of the wire record. They do not occur
+between `burn` and `message_1`, although their C++ object offsets are in that
+area.
 
-Do not implement the Wiki's 15-section layout as the binary model until a
-second executable/resource pair demonstrates that it is equivalent.
+## Section 8 - Sequence Descriptions
+
+The old name was "Randomized Picks." The actual record is
+`cSC4SequenceDescription`. A sequence contains timed `wait` and `play` items.
+
+| Order | Type | Property | Known use |
+| ---: | --- | --- | --- |
+| 1 | `u16` | `marker` | Record marker. Writer value `1`. We do not know its independent purpose. |
+| 2 | `vector<SequenceItem>` | `items` | Ordered wait and play operations. |
+| 3 | `bitset<3>` | `flags` | Bit 0 is `loop`; bit 1 is `noOverlap`; bit 2 is `hardStart`. |
+
+Each `SequenceItem` is `Vec2 timing` followed by `string effect_name`. A wait
+item has an empty effect name. A play item names an effect in the active
+effects collection. The definition can come from this resource or another
+loaded EFFDIR. The two timing components come from the text `wait` or `play`
+command. Their complete independent meanings are not yet confirmed.
+
+## Section 9 - Sound Descriptions
+
+This collection contains `cSC4SoundDescription` records.
+
+| Order | Type | Property | Known use |
+| ---: | --- | --- | --- |
+| 1 | `u16` | `marker` | Record marker. Writer value `0`. We do not know its independent purpose. |
+| 2 | `bitset<1>` | `flags` | **Unknown.** We did not find a parser setter or runtime test for bit 0. |
+| 3 | `u32` | `resource_key` | Sound resource identifier. Runtime code passes it to the sound system. |
+| 4 | `f32` | `location_update_rate` | Stored inverse of text option `-locationUpdateRate`. The constructor default is `0.5`. |
+| 5 | `f32` | `length` | Sound effect length. |
+
+## Section 10 - Camera Descriptions
+
+The old page called this section "Effective Radius?" The actual record is
+`cSC4CameraDescription`.
+
+| Order | Type | Property | Known use |
+| ---: | --- | --- | --- |
+| 1 | `u16` | `marker` | Record marker. Writer value `0`. We do not know its independent purpose. |
+| 2 | `bitset<4>` | `flags` | Bit 0 enables zoom, bit 1 enables rotation, bit 2 uses the target, and bit 3 uses the slave. Runtime code tests all four bits. |
+| 3 | `u8` | `zoom` | Zero-based game zoom value. |
+| 4 | `u8` | `rotation` | Rotation value passed to camera control. |
+| 5 | `f32` | `attach_radius` | Radius used to attach or apply the camera effect. |
+
+The Mac text parser has a defect. Its `rotation` option sets flag bit 1 but
+writes the argument to the zoom byte. Runtime code reads the separate rotation
+byte. A binary editor must keep the two bytes separate.
+
+After all six component collections in Sections 5 through 10, the file stores
+the `u16` component/dynamic-particle marker. The current writer writes `1`.
+
+## Section 11 - Dynamic-Particle Descriptions
+
+The old page called this section "UDI Collisions?" The actual record is
+`cSC4DynamicParticleDescription`. This collection exists only when the major
+version is `4`. A major version 3 file goes directly from the group marker to
+the next marker and Section 12.
+
+### Major-4 dynamic-particle descriptor
+
+The wire order is not the C++ member-offset order. The resource identifiers
+come before the six floats.
+
+| Order | Type | Property | Known use |
+| ---: | --- | --- | --- |
+| 1 | `bitset<7>` | `flags` | **Unknown.** We did not find a parser setter or runtime test. All three standard Maxis records store zero. |
+| 2 | `string` | `base_name` | Base particle effect name from `effectBase`. |
+| 3 | `u32` | `model_key` | Model resource identifier. |
+| 4 | `vector<u32>` | `model_keys` | Resource identifiers for multiple or random models. |
+| 5 | `f32` | `mass` | Body mass. Runtime code stores its reciprocal. The constructor default is `1.0`. |
+| 6 | `f32` | `value_14` | **Unknown.** We did not find a parser setter or runtime reader. |
+| 7 | `f32` | `friction_min` | Minimum linear friction. |
+| 8 | `f32` | `friction_max` | Maximum linear friction. |
+| 9 | `f32` | `angular_friction` | Angular friction. |
+| 10 | `f32` | `value_24` | **Unknown.** We did not find a parser setter or runtime reader. |
+
+After this collection, the file stores the `u16` dynamic-particle/effect
+marker. The current writer writes `2`.
+
+## Section 12 - Effect Descriptions
+
+The old name was "Main Script Index." This collection contains
+`cSC4EffectDescription` records. Each record defines the components and
+ancillary events of one effect. Section 13 gives the effect its external name.
+
+### Effect records
+
+| Order | Type | Property | Known use |
+| ---: | --- | --- | --- |
+| 1 | `bitset<9>` | `flags` | Top-level effect options. See the flag table. |
+| 2 | `u32` | `priority` | Effect priority. |
+| 3 | `vector<DescriptionRecord>` | `descriptions` | Particle, decal, brush, attractor, scrubber, sequence, sound, camera, dynamic-particle, and opaque runtime children. |
+| 4 | `vector<EventRecord>` | `events` | Shake, flash, and tint events. |
+| 5 | `string` | `chain_effect` | Target of `chainEffect`. We confirmed the parser and copy paths. We did not find a consumer in the main manager path. |
+| 6 | `u32` | `start_message_1` | First `startMessage` argument. We do not know its full runtime purpose. Minor version 1 omits this field. |
+| 7 | `u32` | `start_message_2` | Second `startMessage` argument. We do not know its full runtime purpose. Minor version 1 omits this field. |
+| 8 | `u32` | `start_message_3` | Third `startMessage` argument. We do not know its full runtime purpose. Minor version 1 omits this field. |
+
+| Flag bit | Text option |
+| ---: | --- |
+| 0 | `viewRelative` |
+| 1 | `noAutoStop` |
+| 2 | `hardStop` |
+| 3 | `rigid` |
+| 4 | `noPropagate` |
+| 5 | `applyCursor` |
+| 6 | `ignoreOrientation` |
+| 7 | `noLODStop` |
+| 8 | `manualRestart` |
+
+Minor version 1 stops each effect record after `chain_effect`. It does not
+store the three `start_message` values. We did not find a separate version 1
+writer. A tool can preserve an unchanged version 1 resource. It must not add
+the current tail to an old record.
+
+### Effect child records
+
+Each `DescriptionRecord` has this layout:
+
+| Order | Type | Property | Known use |
+| ---: | --- | --- | --- |
+| 1 | `string` | `name` | Source child name. The effects collection resolves named records before runtime use. |
+| 2 | `u8` | `component_type` | Selects the component collection. See Index Flags. |
+| 3 | `bitset<2>` | `flags` | Bit 0 is `ignoreLength`. Bit 1 is `systemSequence`. |
+| 4 | `3 x Vec3` | `transform.matrix` | Row-major 3 by 3 rotation matrix. |
+| 5 | `Vec3` | `transform.translation` | Child offset. |
+| 6 | `f32` | `transform.scale` | Uniform child scale. |
+| 7 | `u32` | `transform.revision` | Transform revision. The game object keeps the low byte, but the wire field is four bytes. |
+| 8 | `u8` | `lod` | Value from the child `-lod` option. Parser default `1`. We did not confirm its full runtime purpose. |
+| 9 | `u8` | `lod_range` | Value from the child `-lodRange` option. Parser default `6`. We did not confirm its full runtime purpose. |
+| 10 | `u16` | `shell_count` | Number of particle shells. Runtime code creates this many instances. Default `1`. |
+| 11 | `u16` | `shell_offset` | Per-shell geometry offset passed to the child. Default `16`. |
+| 12 | `f32` | `emit_scale_min` | Minimum emission scale. |
+| 13 | `f32` | `emit_scale_max` | Maximum emission scale. |
+| 14 | `f32` | `size_scale_min` | Minimum size scale. |
+| 15 | `f32` | `size_scale_max` | Maximum size scale. |
+| 16 | `u16` | `selection_group` | Enclosing `select` group. Zero means no group. |
+| 17 | `u16` | `probability` | Encoded `prob` value for selection. |
+| 18 | `u32` | `description_index` | Resolved index in the selected component collection. `0xFFFFFFFF` means unresolved during parsing. |
+
+The transform revision is a `u32`, not a `u8`. If a tool reads only one byte,
+it shifts all later fields and corrupts the record.
+
+Each `EventRecord` has this layout:
+
+| Order | Type | Property | Known use |
+| ---: | --- | --- | --- |
+| 1 | `bitset<4>` | `flags` | Selects shake, epicenter, flash, or tint behavior. |
+| 2 | `string` | `name` | Source shake or light description name. |
+| 3 | `f32` | `event_float` | For an epicentered flash, this is the falloff radius. The parser default is `1000.0`. The traced shake and tint paths do not use this float. |
+| 4 | `u32` | `description_index` | Direct index into Section 3 for a shake, or Section 4 for a flash or tint. |
+
+| Event bit | Meaning |
+| ---: | --- |
+| 0 | Dispatch a Section 3 shake. |
+| 1 | Use the effect origin as an epicenter. |
+| 2 | Dispatch a Section 4 light as a screen flash. |
+| 3 | Dispatch a Section 4 light as a lighting tint. |
+
+## Section 13 - Main Effect Directory
+
+Section 13 is the effect-name map. It does not start with a record count. It
+contains repeated pairs:
+
+| Order | Type | Property | Description |
+| ---: | --- | --- | --- |
+| 1 | `string` | `effect_name` | External effect name. Name-based references use this value. |
+| 2 | `u32` | `effect_index` | Zero-based index into Section 12. |
+
+The standard Maxis resource has one name-map target for each Section 12
+record. Each Section 12 index occurs one time. The `chain_effect` field in
+Section 12 is not the name of its own effect.
+
+Section 13 ends with this pair:
+
+```text
+string "end"
+u32    0xFFFFFFFF
+```
+
+This pair is the real terminator. There is no `u16` end marker here.
+
+### 13.5 area
+
+The old page listed one byte, one `DWORD`, and nine floats. The complete
+optional record is:
+
+| Order | Type | Property | Description |
+| ---: | --- | --- | --- |
+| 1 | `u8` | `present` | If zero, the record ends here. If nonzero, the remaining fields are present. |
+| 2 | `u16` | `marker` | **Unknown.** Preserve it. The old page omitted this field. |
+| 3 | `u32` | `unknown` | **Unknown.** This is not a vector count. Preserve it. |
+| 4 | `9 x f32` | `values` | **Unknown.** This is a fixed group of nine floats. It has no stored count. |
+
+We do not know the purpose of this metadata. Do not label the nine values
+without more runtime evidence.
+
+## Section 14 - Effect-Key Map
+
+The old name was "Tools FX Linking?" The text commands `effectID` and
+`effectGroup` create this two-part map.
+
+| Order | Type | Property | Description |
+| ---: | --- | --- | --- |
+| 1 | `u32` | Record count | Number of records. |
+| 2 | `string` | `effect_name` | Effect name. It can resolve through Section 13 of this resource or another loaded EFFDIR. |
+| 3 | `u32` | `group_id` | Effect group identifier. |
+| 4 | `u32` | `instance_id` | Instance in the group. |
+
+The group and instance values are not a DBPF TGI for the EFFDIR resource.
+Together, they are the effect key created by `effectID` or `effectGroup`.
+Multiple related effects can share a group and use different instance values.
+This page does not identify all runtime consumers.
+
+After the records, the file stores the `u16` key-map/message-trigger marker.
+The current writer writes `0`. The marker is two bytes, not a reserved `u32`.
+
+## Section 15 - Message Triggers
+
+The old name was "Class ID Calls." This collection contains
+`cSC4MessageTriggerDescription` records.
+
+| Order | Type | Property | Description |
+| ---: | --- | --- | --- |
+| 1 | `u32` | Record count | Number of message triggers. |
+| 2 | `u32` | `message_id` | Game message identifier. |
+| 3 | `string` | `effect_name` | Effect to start. The active effects collection resolves the name. The definition can come from this resource or another loaded EFFDIR. |
+
+The wire order inside each record is message identifier first and string
+second.
+
+## Index Flags
+
+The old Index Flags table mixed component types with old section numbers.
+We confirmed this mapping for the `component_type` byte in a Section 12
+`DescriptionRecord`:
+
+| Value | Component collection | Old section |
+| ---: | --- | ---: |
+| `0` | Particle description | 1 |
+| `1` | Decal description | 2 |
+| `2` | Opaque runtime component | None. It is not a collection index. |
+| `3` | Brush description | 5 |
+| `4` | Attractor description | 6 |
+| `5` | Scrubber description | 7 |
+| `6` | Sequence description | 8 |
+| `7` | Sound description | 9 |
+| `8` | Camera description | 10 |
+| `16` | Dynamic-particle description | 11 |
+
+We do not know values that are not in this table. Preserve the byte and the
+associated index. Do not redirect an unknown value to a guessed section.
+
+## Editing Requirements
+
+The format contains variable-length strings and vectors. A change can move
+all later fields. Do not search for a byte pattern to edit the resource.
+
+A tool that follows this specification must:
+
+1. Decompress QFS/RefPack data at the DBPF layer before it parses EFFDIR.
+2. Use bounded reads for all counts and strings.
+3. Keep unknown fields, unknown bits, markers, string bytes, and trailing
+   bytes when the user does not change them.
+4. Use the major version to decide if Section 11 is present.
+5. Use the minor version to select the shorter version 1 Section 12 record.
+6. Resolve Section 13 targets as indices into Section 12.
+7. Resolve Section 12 child indices with the component-type table.
+8. Report unresolved or out-of-range references before it writes the file.
+9. Keep DBPF compression separate from EFFDIR serialization.
+
+The EFFDIR Editor in this repository implements these rules. Its model and
+tests also record corrections that came from round-trip tests with the
+standard `SimCity_1.dat` resource.

@@ -33,3 +33,5 @@ __pycache__/
 # IntelliJ IDEA / CLion
 *.iml
 .idea/
+.agents/
+.mcp.json
