@@ -81,7 +81,12 @@ def write_wiggle(writer: WriteCursor, w: Wiggle) -> None:
 
 @dataclass(frozen=True)
 class TractorPoint:
-    """Vec3, Vec3, f32, f32 (32 bytes)."""
+    """Vec3, Vec3, f32 start-time, f32 end-time (32 bytes).
+
+    The historical member names ``time`` and ``amount`` are retained for
+    wire/API compatibility. The parser stores its current chain time in
+    ``time`` and the segment end time in ``amount``.
+    """
 
     position: Vec3
     direction: Vec3

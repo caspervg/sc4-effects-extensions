@@ -12,6 +12,7 @@ import wx
 import wx.aui
 import wx.dataview as dv
 
+from .. import fx as _fx
 from ..container.adapter import DEFAULT_EFFDIR_TGI, DbpfEffDirSource, LocalFileEffDirSource, ResourceHandle, WriteOptions
 from ..editor import api
 from ..editor import nodes as _nodes
@@ -20,6 +21,7 @@ from ..editor.session import EditorSession
 from ..model.resource import default_resource, write_resource
 from ..version import app_title
 from .diagnostics_panel import DiagnosticsPanel
+from .fx_preview import FxPreviewDialog
 from .hex_view import HexView
 from .record_editor import RecordEditor
 from .resource_tree import ResourceTree
@@ -119,6 +121,8 @@ class MainFrame(wx.Frame):
             "Store the selected EFFDIR entry using QFS/RefPack compression",
         )
         self._compression_item.Enable(False)
+        file_menu.AppendSeparator()
+        self._append(file_menu, wx.ID_ANY, "Export as .fx...", self._on_export_fx)
         file_menu.AppendSeparator()
         self._append(file_menu, wx.ID_EXIT, "E&xit", lambda e: self.Close())
         menu_bar.Append(file_menu, "&File")
@@ -270,6 +274,54 @@ class MainFrame(wx.Frame):
         self._update_enabled_state()
         return True
 
+    # --- .fx export -----------------------------------------------------------
+
+    def _on_export_fx(self, _evt) -> None:
+        if self.session is None:
+            return
+        result = _fx.emit_resource(self.session.working)
+        self._save_fx_result(result, "resource.fx")
+
+    def _export_effect_fx(self, path: str, *, transitive: bool) -> None:
+        if self.session is None:
+            return
+        index = _paths.tokenize(path)[-1]
+        result = _fx.emit_effect_closure(self.session.working, index, transitive=transitive)
+        if result is None:
+            wx.MessageBox("Could not export this effect.", "Export failed", wx.OK | wx.ICON_ERROR)
+            return
+        suffix = "_full" if transitive else ""
+        self._save_fx_result(result, f"effect_{index}{suffix}.fx")
+
+    def _save_fx_result(self, result: _fx.FxEmitResult, default_file: str) -> None:
+        # Preview first: the export is lossy by nature, so the coverage
+        # notes belong next to the text they describe, not behind a
+        # yes/no prompt the user answers before seeing anything.
+        with FxPreviewDialog(self, f"Decompiled fx — {default_file}", result.text, result.coverage) as dlg:
+            if dlg.ShowModal() != wx.ID_SAVE:
+                return
+        with wx.FileDialog(
+            self,
+            "Export as .fx",
+            defaultFile=default_file,
+            wildcard="fx source (*.fx)|*.fx|All files (*.*)|*.*",
+            style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT,
+        ) as dlg:
+            if dlg.ShowModal() != wx.ID_OK:
+                return
+            path = dlg.GetPath()
+        try:
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(result.text)
+        except OSError as exc:
+            wx.MessageBox(f"Could not write file:\n{exc}", "Export failed", wx.OK | wx.ICON_ERROR)
+            return
+        self.status.SetStatusText(
+            f"Exported .fx ({result.coverage.fields_emitted}/{result.coverage.fields_considered} fields, "
+            f"{len(result.coverage.notes)} note(s))",
+            0,
+        )
+
     def _on_close(self, event: wx.CloseEvent) -> None:
         if self.session is not None and self.session.dirty:
             if wx.MessageBox("Discard unsaved changes?", "Unsaved changes", wx.YES_NO | wx.ICON_WARNING) != wx.YES:
@@ -386,6 +438,12 @@ class MainFrame(wx.Frame):
         if kind == "record" and isinstance(_paths.tokenize(path)[-1], int):
             remove_item = menu.Append(ID_REMOVE_RECORD, "Remove")
             self.Bind(wx.EVT_MENU, lambda e, p=path: self._remove_record(p), remove_item)
+        tokens = _paths.tokenize(path)
+        if kind == "record" and len(tokens) == 2 and tokens[0] == "effect_descriptions" and isinstance(tokens[1], int):
+            export_item = menu.Append(wx.ID_ANY, "Export Effect as .fx...")
+            self.Bind(wx.EVT_MENU, lambda e, p=path: self._export_effect_fx(p, transitive=False), export_item)
+            export_all_item = menu.Append(wx.ID_ANY, "Export Effect + Dependencies as .fx...")
+            self.Bind(wx.EVT_MENU, lambda e, p=path: self._export_effect_fx(p, transitive=True), export_all_item)
 
         if menu.GetMenuItemCount():
             self.tree.tree.PopupMenu(menu)

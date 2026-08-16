@@ -13,12 +13,9 @@ examples table):
 
 - `+0x150` (`collision_effect_or_death`): `effect` and `death` options of
   `cParticleCollisionCommand`.
-- `+0x1d4` (`model_speed_static`): the bullet list in effdir.md notes that
-  `modelSpeed`/`modelSpeedStatic` "use the same model-speed storage", but
-  the wire dump shows two adjacent floats (+0x1d0, +0x1d4) and the typed
-  schema in effdir-editor-spec.md names both. Both are kept as distinct
-  wire members; the shared-storage note is preserved here as a caveat, not
-  collapsed into one field.
+- `+0x1d0` (`model_speed`): the scalar written by `source -dice`.
+- `+0x1d4` (`model_speed_static`): shared by `model -modelSpeed` and
+  `model -modelSpeedStatic`; third-bitset bit 6 distinguishes the former.
 
 The three leading bitsets are the "leading bitset" / "second bitset" /
 "third bitset" referenced throughout effdir.md's parser cross-reference;
@@ -111,8 +108,8 @@ class ParticleDescriptor:
     aspect_curve: WireVector[float]  # +0x0b8, aspect-over-time
     rotate_curve: WireVector[float]  # +0x0c4, rotate-over-time
     resource_key: Raw[int]  # +0x0d0, texture/model shared resource key
-    draw_mode: Raw[int]  # +0x0d4, model draw option (parser writes 3)
-    alignment_mode: Raw[int]  # +0x0d5, cParticleAlignmentCommand
+    draw_mode: Raw[int]  # +0x0d4, shared draw enum 0..7 (model parser writes 3)
+    alignment_mode: Raw[int]  # +0x0d5, alignment enum 0..4
     sort_offset: Raw[float]  # +0x0d8, texture/model -sortOffset
     stretch: Raw[float]  # +0x0dc, cParticleStretchCommand
     force: Vec3  # +0x0e0, cParticleForceCommand accumulated gravity/wind
@@ -126,7 +123,7 @@ class ParticleDescriptor:
     uv_range: Vec2  # +0x118
     alpha_warp_direction: Vec3  # +0x120
     alpha_warp_curve: WireVector[float]  # +0x12c
-    bounce: Raw[float]  # +0x138, cParticleCollisionCommand (default 0.3)
+    bounce: Raw[float]  # +0x138; constructor 0, active collision parser default 0.3
     terrain_repel: Vec2  # +0x13c/+0x140, cParticleTerrainRepelCommand
     scout: Raw[float]  # +0x144
     vertical: Raw[float]  # +0x148
@@ -134,7 +131,7 @@ class ParticleDescriptor:
     collision_effect_or_death: Raw[float]  # +0x150, shared: effect / death
     death_by_water: Raw[float]  # +0x154
     height_range: Vec2  # +0x158, source belowHeight/aboveHeight/heightRange
-    terrain_name: WireString  # +0x160
+    terrain_name: WireString  # +0x160, compiler lineage/name metadata
     value_164: Raw[int]  # serialized/copied, no parser setter or runtime read found
     value_166: Raw[int]  # serialized/copied, no parser setter or runtime read found
     value_168: Raw[float]  # serialized/copied, no parser setter or runtime read found
@@ -150,8 +147,8 @@ class ParticleDescriptor:
     tractor_points: WireVector[TractorPoint]  # +0x1b0
     tractor_reset_speed: Raw[float]  # +0x1bc
     timed_effects: WireVector[TimedEffect]  # +0x1c4
-    model_speed: Raw[float]  # +0x1d0
-    model_speed_static: Raw[float]  # +0x1d4, see module docstring caveat
+    model_speed: Raw[float]  # +0x1d0, source -dice scalar
+    model_speed_static: Raw[float]  # +0x1d4, modelSpeed/modelSpeedStatic
     model_keys: WireVector[int]  # +0x1d8
     explosion: Raw[float]  # +0x1e4
     explosion_front_secondary: Raw[float]  # +0x1e8
@@ -313,10 +310,11 @@ def write_particle(writer: WriteCursor, p: ParticleDescriptor) -> None:
 def default_particle() -> ParticleDescriptor:
     """Constructor-equivalent defaults for a newly added particle.
 
-    Only the two defaults effdir.md documents from the executable
-    constructor are applied (emit curve `[25]`, color curve `[white]`);
-    everything else is zeroed. These are convenience values, not semantic
-    claims (effdir-editor-spec.md, "Add a particle or other descriptor").
+    Values are transcribed from the symbolized Mac
+    ``cSC4ParticlesDescriptionBase`` constructor at ``0x003F54DA``. They
+    are also the baseline used by the FX decompiler: the packed format
+    cannot distinguish an omitted command from an explicitly-authored
+    command that produced these same values.
     """
 
     zero_f32 = lambda: make_raw_f32(0.0)
@@ -325,33 +323,31 @@ def default_particle() -> ParticleDescriptor:
     zero_u8 = lambda: make_raw_u8(0)
     zero_vec2 = lambda: Vec2(0.0, 0.0)
     zero_vec3 = lambda: Vec3(0.0, 0.0, 0.0)
-    zero_bounds3 = lambda: Bounds3(zero_vec3(), zero_vec3())
-
     return ParticleDescriptor(
         flags_0=make_raw_bitset(0, 32),
         flags_1=make_raw_bitset(0, 8),
         flags_2=make_raw_bitset(0, 11),
-        life=zero_vec2(),
-        emit_loop_interval=zero_f32(),
+        life=Vec2(2.0, 2.0),
+        emit_loop_interval=make_raw_f32(1.0),
         emit_loop_count=zero_u32(),
         preroll=zero_f32(),
-        emit_delay=zero_vec2(),
-        emit_trigger=zero_vec2(),
-        emit_velocity_bounds=zero_bounds3(),
+        emit_delay=Vec2(-1.0, -1.0),
+        emit_trigger=Vec2(-1.0, -1.0),
+        emit_velocity_bounds=Bounds3(Vec3(0.0, 1.0, 0.0), Vec3(0.0, 1.0, 0.0)),
         emit_speed=zero_vec2(),
-        source_bounds=zero_bounds3(),
+        source_bounds=Bounds3(Vec3(-1.0, -1.0, -1.0), Vec3(1.0, 1.0, 1.0)),
         size_vary=zero_f32(),
         aspect_vary=zero_f32(),
         rotate_vary=zero_f32(),
         rotate_offset=zero_f32(),
         alpha_vary=zero_f32(),
         color_vary=zero_vec3(),
-        emit_curve=WireVector(count=1, items=[25.0], source_span=None),
+        emit_curve=WireVector(count=1, items=[30.0], source_span=None),
         color_curve=WireVector(count=1, items=[Vec3(1.0, 1.0, 1.0)], source_span=None),
-        alpha_curve=WireVector(count=0, items=[], source_span=None),
-        size_curve=WireVector(count=0, items=[], source_span=None),
-        aspect_curve=WireVector(count=0, items=[], source_span=None),
-        rotate_curve=WireVector(count=0, items=[], source_span=None),
+        alpha_curve=WireVector(count=1, items=[1.0], source_span=None),
+        size_curve=WireVector(count=1, items=[1.0], source_span=None),
+        aspect_curve=WireVector(count=1, items=[1.0], source_span=None),
+        rotate_curve=WireVector(count=1, items=[0.0], source_span=None),
         resource_key=zero_u32(),
         draw_mode=zero_u8(),
         alignment_mode=zero_u8(),
@@ -365,29 +361,29 @@ def default_particle() -> ParticleDescriptor:
         screw=zero_f32(),
         wiggles=WireVector(count=0, items=[], source_span=None),
         uv_scale=zero_f32(),
-        uv_range=zero_vec2(),
-        alpha_warp_direction=zero_vec3(),
+        uv_range=Vec2(1.0, 0.0),
+        alpha_warp_direction=Vec3(0.0, 1.0, 0.0),
         alpha_warp_curve=WireVector(count=0, items=[], source_span=None),
-        bounce=make_raw_f32(0.3),
+        bounce=zero_f32(),
         terrain_repel=zero_vec2(),
         scout=zero_f32(),
         vertical=zero_f32(),
-        kill_height=zero_f32(),
+        kill_height=make_raw_f32(-1_000_000_000.0),
         collision_effect_or_death=zero_f32(),
-        death_by_water=zero_f32(),
-        height_range=zero_vec2(),
+        death_by_water=make_raw_f32(1.0),
+        height_range=Vec2(-10_000.0, 10_000.0),
         terrain_name=WireString(decoded="", raw_bytes=b"", encoding="utf8", framing=None, valid=True, changed=True),
         value_164=zero_u16(),
         value_166=make_raw_u16(1),
         value_168=make_raw_f32(1.0),
-        random_walk_delay=zero_vec2(),
-        random_walk_strength=zero_vec2(),
-        random_walk_turn=zero_vec2(),
+        random_walk_delay=Vec2(5.0, 5.0),
+        random_walk_strength=Vec2(50.0, 50.0),
+        random_walk_turn=Vec2(0.1, 0.2),
         prefer_direction=zero_vec3(),
         alignment_damp=zero_f32(),
         bank_range=zero_vec2(),
         attractor_curve=WireVector(count=0, items=[], source_span=None),
-        attractor_strength=zero_f32(),
+        attractor_strength=make_raw_f32(1.0),
         automata_id=zero_u32(),
         tractor_points=WireVector(count=0, items=[], source_span=None),
         tractor_reset_speed=zero_f32(),
@@ -396,7 +392,7 @@ def default_particle() -> ParticleDescriptor:
         model_speed_static=zero_f32(),
         model_keys=WireVector(count=0, items=[], source_span=None),
         explosion=zero_f32(),
-        explosion_front_secondary=zero_f32(),
-        explosion_curve=WireVector(count=0, items=[], source_span=None),
-        explosion_front=zero_f32(),
+        explosion_front_secondary=make_raw_f32(4.0),
+        explosion_curve=WireVector(count=1, items=[400.0], source_span=None),
+        explosion_front=make_raw_f32(4.0),
     )

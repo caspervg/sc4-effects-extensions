@@ -17,17 +17,13 @@ Top-level wire spine, effdir.md "Verified top-level wire spine" table:
 13  vector<EffectDescription>
 14  repeated (string, u32) pairs (effect_name_map, no count prefix)
 15  string "end", u32 0xFFFFFFFF (effect_name_map terminator)
-16  u8 hasTrailingFloats; if nonzero: u16 marker, u32 unknown (NOT a
-    count), then a FIXED 9 x f32 (TrailingFloatMetadata) -- effdir.md
-    describes step 16 as "optional vector<f32>" with a runtime count, but
-    no u8/u16/u32 count-width or byte-offset near the flag reproduces a
-    valid count against real vanilla data. The SC4Devotion wiki's EFFDIR
-    page has an unlabeled "13.5 area" (BYTE, DWORD, then nine bare FLOAT
-    lines -- no "(number of reps)" annotation, unlike every counted
-    section on that page) which is this same region; treating the count
-    as fixed-9 and the DWORD as an uninterpreted scalar reproduces the
-    real file's bytes exactly (verified against SimCity_1.dat's vanilla
-    EFFDIR, including the u16 marker the wiki's list omits).
+16  u8 hasCameraParams; if nonzero: cSC4CameraParams, serialized as u16
+    marker, vector<f32> zoom levels (u32 count + values), then four f32s:
+    parallax base, parallax range, size, and side-swipe. This is the
+    `cameraParams` source command. Confirmed in the symbolized Mac binary
+    by cSC4EffectsResource::Read/Write (0x003DDA9C/0x003DE3DA), the camera
+    stream operators (0x003FC326/0x003FC2B8), and
+    cCameraParamsCommand::Parse (0x0078600E).
 17  vector<StringU32U32Record>   (effect_key_map, normal count prefix)
 18  u16 0                        (message_triggers' own group marker, same
                                   pattern as marker_particles_decals etc.;
@@ -113,41 +109,39 @@ from .shake import ShakeDescriptor, read_shake, write_shake
 
 _EFFECT_NAME_MAP_TERMINATOR = b"end"
 _EFFECT_NAME_MAP_TERMINATOR_TARGET = 0xFFFFFFFF
-_TRAILING_FLOAT_COUNT = 9  # fixed; see module docstring, step 16
-
-
 class UnsupportedVersionError(ValueError):
     pass
 
 
 @dataclass(frozen=True)
 class TrailingFloatMetadata:
-    """Step 16 of the top-level spine. See module docstring: this is not
-    a runtime vector<f32> despite effdir.md's description -- `marker` and
-    `unknown` are only present when `present.value != 0`, and `values` is
-    always exactly 9 floats when present, never a stored count."""
+    """Wire representation of the optional global `cameraParams` value.
+
+    `values` contains the counted zoom levels followed by the four fixed
+    scalars (parallax base/range, size, side-swipe).
+    """
 
     present: Raw[int]  # u8
     marker: Optional[Raw[int]]  # u16
-    unknown: Optional[Raw[int]]  # u32; not a count
-    values: Optional[Tuple[float, ...]]  # exactly _TRAILING_FLOAT_COUNT f32
+    count: Optional[Raw[int]]  # u32 zoom-level count
+    values: Optional[Tuple[float, ...]]  # count zoom levels + four fixed f32s
 
 
 def read_trailing_float_metadata(cursor: ReadCursor) -> TrailingFloatMetadata:
     present = read_u8(cursor)
     if present.value == 0:
-        return TrailingFloatMetadata(present=present, marker=None, unknown=None, values=None)
+        return TrailingFloatMetadata(present=present, marker=None, count=None, values=None)
     marker = read_u16(cursor)
-    unknown = read_u32(cursor)
-    values = tuple(cursor.f32() for _ in range(_TRAILING_FLOAT_COUNT))
-    return TrailingFloatMetadata(present=present, marker=marker, unknown=unknown, values=values)
+    count = read_u32(cursor)
+    values = tuple(cursor.f32() for _ in range(count.value + 4))
+    return TrailingFloatMetadata(present=present, marker=marker, count=count, values=values)
 
 
 def write_trailing_float_metadata(writer: WriteCursor, t: TrailingFloatMetadata) -> None:
     write_raw(writer, t.present)
     if t.present.value != 0:
         write_raw(writer, t.marker)
-        write_raw(writer, t.unknown)
+        write_raw(writer, t.count)
         for v in t.values:
             writer.f32(v)
 
@@ -217,7 +211,7 @@ def _raw_fallback(data: bytes, error: Exception) -> EffDirResource:
         marker_dynamic_effects=make_raw_u16(0),
         effect_descriptions=empty_vector(),
         effect_name_map=empty_vector(),
-        trailing_float_metadata=TrailingFloatMetadata(present=make_raw_u8(0), marker=None, unknown=None, values=None),
+        trailing_float_metadata=TrailingFloatMetadata(present=make_raw_u8(0), marker=None, count=None, values=None),
         effect_key_map=empty_vector(),
         marker_key_map_triggers=make_raw_u16(0),
         message_triggers=empty_vector(),
@@ -346,7 +340,7 @@ def default_resource() -> EffDirResource:
         marker_dynamic_effects=make_raw_u16(2),
         effect_descriptions=empty_vector(),
         effect_name_map=empty_vector(),
-        trailing_float_metadata=TrailingFloatMetadata(present=make_raw_u8(0), marker=None, unknown=None, values=None),
+        trailing_float_metadata=TrailingFloatMetadata(present=make_raw_u8(0), marker=None, count=None, values=None),
         effect_key_map=empty_vector(),
         marker_key_map_triggers=make_raw_u16(0),
         message_triggers=empty_vector(),

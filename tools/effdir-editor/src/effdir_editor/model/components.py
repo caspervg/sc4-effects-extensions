@@ -158,7 +158,7 @@ class ScrubberDescription:
     flags: Raw[int]  # +0xc, bitset<7>: noNetworks/noFlora/dezone/single/pauseSim/pauseSimHidden/pauseClock
     value_10: Raw[int]  # serialized, but no parser setter or runtime read found
     demolish: Raw[int]  # +0x14, "-demolish"
-    action: Raw[int]  # +0x18, demolition action/effect packed value
+    action: Raw[int]  # +0x18: low byte effect ID; upper kind bits 0x0300/0x1300
     min_size: Raw[float]  # +0x1c, "-minDemolishSize"
     max_size: Raw[float]  # +0x20, "-maxDemolishSize"
     burn: Raw[int]  # +0x24, "-burn"

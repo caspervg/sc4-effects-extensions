@@ -9,7 +9,7 @@ from typing import Any, List
 from ..model.common import ReadProfile
 from ..model.resource import EffDirResource
 from ..wire import Diagnostic, Raw, WireString, WireVector
-from .references import COMPONENT_COLLECTIONS, OPAQUE_COMPONENT_TYPES
+from .references import COMPONENT_COLLECTIONS, NAME_BASED_COMPONENT_TYPES
 
 _U32_SENTINEL = 0xFFFFFFFF
 _TOP_LEVEL_MARKERS = {
@@ -155,7 +155,7 @@ def validate_resource(resource: EffDirResource, *, dirty: bool = False) -> List[
             component = COMPONENT_COLLECTIONS.get(component_type)
             target = int(description.description_index.value)
             if component is None:
-                if component_type not in OPAQUE_COMPONENT_TYPES:
+                if component_type not in NAME_BASED_COMPONENT_TYPES:
                     diagnostics.append(
                         _diagnostic(
                             "warning",
@@ -212,7 +212,7 @@ def validate_resource(resource: EffDirResource, *, dirty: bool = False) -> List[
 
     metadata = resource.trailing_float_metadata
     if metadata.present.value != 0:
-        if metadata.marker is None or metadata.unknown is None or metadata.values is None:
+        if metadata.marker is None or metadata.count is None or metadata.values is None:
             diagnostics.append(
                 _diagnostic(
                     "error",
@@ -221,16 +221,17 @@ def validate_resource(resource: EffDirResource, *, dirty: bool = False) -> List[
                     "trailing_float_metadata",
                 )
             )
-        elif len(metadata.values) != 9:
+        elif len(metadata.values) != metadata.count.value + 4:
             diagnostics.append(
                 _diagnostic(
                     "error",
                     "invalid_trailing_float_count",
-                    f"trailing float metadata has {len(metadata.values)} values; expected 9",
+                    f"camera parameters have {len(metadata.values)} values; expected "
+                    f"{metadata.count.value + 4} ({metadata.count.value} zoom levels plus four scalars)",
                     "trailing_float_metadata.values",
                 )
             )
-    elif any(value is not None for value in (metadata.marker, metadata.unknown, metadata.values)):
+    elif any(value is not None for value in (metadata.marker, metadata.count, metadata.values)):
         diagnostics.append(
             _diagnostic(
                 "warning",
