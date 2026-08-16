@@ -3,7 +3,7 @@ from effdir_editor.bindings.bitfields import bit_labels, named_bits
 
 def test_particle_bitsets_use_mac_parser_and_runtime_names():
     assert bit_labels("ParticleDescriptor", "flags_0", 32) == [
-        "light", "emit/inject", "maintain", "sustain", "noCull", "emit.base",
+        "light", "inject", "maintain", "sustain", "noCull", "emit.base",
         "source.model", "source.modelBase", "collision", "collision.sticky",
         "terrainRepel", "killOutsideCity", "source.city", "source.cityWindySide",
         "source.pinToTerrain", "source.pinToWater", "source.heightFilter",

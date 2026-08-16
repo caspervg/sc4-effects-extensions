@@ -31,7 +31,7 @@ _KNOWN_LABELS: Dict[Tuple[str, str], Dict[int, str]] = {
     # names are deliberate shared storage, not independent flags.
     ("ParticleDescriptor", "flags_0"): {
         0: "light",
-        1: "emit/inject",
+        1: "inject",
         2: "maintain",
         3: "sustain",
         4: "noCull",

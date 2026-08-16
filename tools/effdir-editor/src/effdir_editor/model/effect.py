@@ -287,13 +287,20 @@ def write_effect_description(writer: WriteCursor, e: EffectDescription, profile:
 
 
 def default_effect_description() -> EffectDescription:
+    """Defaults from ``cSC4EffectDescription`` at Mac ``0x0075CBFE``.
+
+    The constructor initializes priority and only the first start-message
+    word. The Windows debug build's untouched second and third words are
+    serialized as the usual ``0xCCCCCCCC`` debug-fill pattern.
+    """
+
     return EffectDescription(
         flags=make_raw_bitset(0, 9),
-        priority=make_raw_u32(0),
+        priority=make_raw_u32(1),
         descriptions=WireVector(count=0, items=[], source_span=None),
         events=WireVector(count=0, items=[], source_span=None),
         chain_effect=WireString(decoded="", raw_bytes=b"", encoding="utf8", framing=None, valid=True, changed=True),
         start_message_1=make_raw_u32(0),
-        start_message_2=make_raw_u32(0),
-        start_message_3=make_raw_u32(0),
+        start_message_2=make_raw_u32(0xCCCCCCCC),
+        start_message_3=make_raw_u32(0xCCCCCCCC),
     )

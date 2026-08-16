@@ -1057,8 +1057,9 @@ class RecordEditor(wx.Panel):
                 self.reference_splitter.SplitHorizontally(
                     self.editor_panel,
                     self.references_panel,
-                    self.FromDIP(170),
+                    self.FromDIP(500),
                 )
+            self.reference_splitter.SetSashGravity(0.9)
             self.references_panel.Show()
         elif self.reference_splitter.IsSplit():
             self.reference_splitter.Unsplit(self.references_panel)

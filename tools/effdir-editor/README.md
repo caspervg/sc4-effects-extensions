@@ -24,6 +24,16 @@ Three layers, matching the spec:
   `commit`) that both the UI and any future scripting entry point call.
 - `bindings/` — the command-binding catalog mapping text-format command
   names to wire members, with evidence levels.
+- `fx/` — a one-way, best-effort decompiler from the binary model to the
+  recovered `.fx` source language (`docs/reference/`, `docs/syntax/`).
+  Not a compiler: there is no path back from fx text to `EFFDIR` bytes.
+  Every field it cannot represent (opaque or unconfirmed component types,
+  ambiguous shared-storage fields, non-identity rotation matrices, ...) is
+  reported through a `Coverage` object rather than guessed.
+  Constructor and command-parser defaults used for canonical minimal output
+  are documented in [`docs/compiler-defaults.md`](docs/compiler-defaults.md).
+  Recovered command equivalences and irrecoverable source distinctions are
+  documented in [`docs/decompiler-semantics.md`](docs/decompiler-semantics.md).
 - `ui/` — wxPython AUI-docked workspace (resource tree, property-grid
   record editor, hex view with source-span highlighting, diagnostics
   list). Only talks to `editor/`, never to `wire/`/`model/` directly.
@@ -56,6 +66,12 @@ between monitors with different scale factors.
 - Optional QFS compression on DBPF writes, preserving the original state by default.
 - Unsupported major versions or malformed input fall back to a
   raw-preserved, read-only resource rather than guessing a layout.
+- Export decompiled `.fx` source: the whole resource (File → Export as
+  .fx...), a single effect and the pools it directly references, or an
+  effect plus its full transitive dependency closure (right-click an
+  effect description in the tree). Each export opens a syntax-highlighted
+  preview listing everything that could not be represented before you
+  save or copy it.
 
 ## Tests
 

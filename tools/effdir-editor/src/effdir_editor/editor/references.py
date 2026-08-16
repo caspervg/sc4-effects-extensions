@@ -22,9 +22,8 @@ is proven by `StartAncilliary` to index top-level `shakes` for bit 0 and
 `lights` for bits 2/3. Those direct references are included as
 path-based backlinks. DescriptionRecord component references use the
 component-type values observed in the vanilla resource to link into the
-corresponding top-level collection. Component type 2 is intentionally left
-opaque: vanilla records use it as a non-collection runtime component and its
-index is not a collection index.
+corresponding top-level collection. Component type 2 is the exception: it is
+a name-based `visualEffect` link and its index is not a collection index.
 """
 
 from __future__ import annotations
@@ -103,7 +102,7 @@ COMPONENT_COLLECTIONS = {
     16: ("dynamic_particles", "dynamic particle"),
 }
 
-OPAQUE_COMPONENT_TYPES = {2}
+NAME_BASED_COMPONENT_TYPES = {2}
 
 
 @dataclass(frozen=True)
@@ -149,6 +148,16 @@ def references_to_name(resource: EffDirResource, name: str) -> List[Reference]:
                         ),
                     )
                 )
+    for effect_index, effect in enumerate(resource.effect_descriptions.items):
+        descriptions = getattr(effect, "descriptions", None)
+        if descriptions is None:
+            continue
+        for description_index, description in enumerate(descriptions.items):
+            if int(description.component_type.value) == 2 and description.name.decoded == name:
+                source_path = f"effect_descriptions[{effect_index}].descriptions[{description_index}]"
+                references.append(
+                    Reference(path=source_path, label=f'{source_path} "{name}" (visualEffect)')
+                )
     return references
 
 
@@ -157,7 +166,7 @@ def build_reference_index(resource: EffDirResource) -> ReferenceIndex:
 
     name_to_indices: Dict[str, List[int]] = defaultdict(list)
     for entry in resource.effect_name_map.items:
-        name_to_indices[entry.name.decoded].append(entry.target.value)
+        name_to_indices[entry.name.decoded.casefold()].append(entry.target.value)
     names: Dict[int, str] = {entry.target.value: entry.name.decoded for entry in resource.effect_name_map.items}
 
     index: Dict[int, List[Reference]] = defaultdict(list)
@@ -175,7 +184,7 @@ def build_reference_index(resource: EffDirResource) -> ReferenceIndex:
         add_outgoing(source_path, target_path, f'effect "{entry.name.decoded}"', "Effect name")
     for i, entry in enumerate(resource.effect_key_map.items):
         source_path = f"effect_key_map[{i}]"
-        for target in name_to_indices.get(entry.name.decoded, []):
+        for target in name_to_indices.get(entry.name.decoded.casefold(), []):
             target_path = f"effect_descriptions[{target}]"
             index[target].append(
                 Reference(
@@ -195,7 +204,7 @@ def build_reference_index(resource: EffDirResource) -> ReferenceIndex:
             )
     for i, trigger in enumerate(resource.message_triggers.items):
         source_path = f"message_triggers[{i}]"
-        for target in name_to_indices.get(trigger.effect_name.decoded, []):
+        for target in name_to_indices.get(trigger.effect_name.decoded.casefold(), []):
             target_path = f"effect_descriptions[{target}]"
             index[target].append(
                 Reference(
@@ -214,7 +223,7 @@ def build_reference_index(resource: EffDirResource) -> ReferenceIndex:
             if not item.effect_name.decoded:
                 continue  # a "wait" item has no effect name; only "play" items reference one
             source_path = f"components.sequences[{i}].items[{j}]"
-            for target in name_to_indices.get(item.effect_name.decoded, []):
+            for target in name_to_indices.get(item.effect_name.decoded.casefold(), []):
                 target_path = f"effect_descriptions[{target}]"
                 index[target].append(
                     Reference(
@@ -231,6 +240,27 @@ def build_reference_index(resource: EffDirResource) -> ReferenceIndex:
                     f'effect "{item.effect_name.decoded}" '
                     f"(play, timing {item.timing.x:g}/{item.timing.y:g})",
                     "Sequence",
+                )
+    for effect_index, effect in enumerate(resource.effect_descriptions.items):
+        descriptions = getattr(effect, "descriptions", None)
+        if descriptions is None:
+            continue
+        for description_index, description in enumerate(descriptions.items):
+            if int(description.component_type.value) != 2:
+                continue
+            name = description.name.decoded or ""
+            source_path = f"effect_descriptions[{effect_index}].descriptions[{description_index}]"
+            for target in name_to_indices.get(name.casefold(), []):
+                target_path = f"effect_descriptions[{target}]"
+                index[target].append(
+                    Reference(source_path, f'{source_path} "{name}" (visualEffect)')
+                )
+                add_outgoing(source_path, target_path, f'visualEffect "{name}"', "Component")
+                add_outgoing(
+                    f"effect_descriptions[{effect_index}]",
+                    target_path,
+                    f'description[{description_index}] → visualEffect "{name}"',
+                    "Component",
                 )
     path_backlinks: Dict[str, List[Reference]] = {
         f"effect_descriptions[{target}]": references
@@ -274,6 +304,8 @@ def build_reference_index(resource: EffDirResource) -> ReferenceIndex:
         if descriptions is None:
             continue
         for description_index, description in enumerate(descriptions.items):
+            if int(description.component_type.value) in NAME_BASED_COMPONENT_TYPES:
+                continue
             component = COMPONENT_COLLECTIONS.get(description.component_type.value)
             if component is None:
                 continue

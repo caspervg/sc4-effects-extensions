@@ -122,3 +122,43 @@ def test_description_records_link_to_verified_component_collections():
     assert owner_outgoing.path == "particles[1]"
     assert owner_outgoing.kind == "Component"
     assert "description[0]" in owner_outgoing.label
+
+
+def test_visual_effect_description_links_by_name_not_description_index():
+    visual = SimpleNamespace(
+        name=_name("target"),
+        component_type=_value(2),
+        description_index=_value(999),
+    )
+    resource = SimpleNamespace(
+        effect_name_map=_vector(
+            SimpleNamespace(name=_name("owner"), target=_value(0)),
+            SimpleNamespace(name=_name("target"), target=_value(1)),
+        ),
+        effect_key_map=_vector(),
+        message_triggers=_vector(),
+        effect_descriptions=_vector(
+            SimpleNamespace(descriptions=_vector(visual), events=_vector()),
+            SimpleNamespace(descriptions=_vector(), events=_vector()),
+        ),
+        particles=_vector(),
+        decals=_vector(),
+        shakes=_vector(),
+        lights=_vector(),
+        dynamic_particles=_vector(),
+        components=SimpleNamespace(
+            brushes=_vector(),
+            attractors=_vector(),
+            scrubbers=_vector(),
+            sequences=_vector(),
+            sounds=_vector(),
+            cameras=_vector(),
+        ),
+    )
+
+    index = build_reference_index(resource)
+
+    refs = index.path_backlinks["effect_descriptions[1]"]
+    assert any(ref.path == "effect_descriptions[0].descriptions[0]" for ref in refs)
+    outgoing = index.outgoing["effect_descriptions[0].descriptions[0]"]
+    assert any(ref.path == "effect_descriptions[1]" and "visualEffect" in ref.label for ref in outgoing)
