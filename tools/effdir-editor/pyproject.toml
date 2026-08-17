@@ -1,6 +1,6 @@
 [project]
 name = "effdir-editor"
-version = "0.2.0"
+version = "0.2.1"
 description = "Cross-platform wxPython editor for the SimCity 4 packed EFFDIR resource format"
 readme = "README.md"
 license = "GPL-3.0-or-later"
