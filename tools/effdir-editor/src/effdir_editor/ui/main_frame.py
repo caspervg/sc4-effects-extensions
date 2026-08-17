@@ -21,6 +21,7 @@ from ..editor.session import EditorSession
 from ..model.resource import default_resource, write_resource
 from ..version import app_title
 from .diagnostics_panel import DiagnosticsPanel
+from .effdir_picker import EffDirPickerDialog
 from .fx_preview import FxPreviewDialog
 from .hex_view import HexView
 from .record_editor import RecordEditor
@@ -54,7 +55,9 @@ class MainFrame(wx.Frame):
         self._mgr = wx.aui.AuiManager(self)
 
         self.tree = ResourceTree(self, on_select=self._on_tree_select)
-        self.record_editor = RecordEditor(self, on_change=self._on_field_changed, on_navigate=self._select_path)
+        self.record_editor = RecordEditor(
+            self, on_change=self._on_field_changed, on_navigate=self._select_path, on_export=self._export_preview_fx
+        )
         self.diagnostics = DiagnosticsPanel(self, on_activate_path=self._select_path)
         self.hex_view = HexView(self)
 
@@ -75,10 +78,13 @@ class MainFrame(wx.Frame):
             wx.aui.AuiPaneInfo()
             .Bottom()
             .Caption("Diagnostics")
-            .MinSize(self.FromDIP((-1, 140)))
-            .BestSize(self.FromDIP((-1, 200)))
+            .MinSize(self.FromDIP((-1, 90)))
+            .BestSize(self.FromDIP((-1, 120)))
             .CloseButton(False),
         )
+        # Hidden by default: it is a debugging aid, not a primary working
+        # view, and always-docked it was taking space from Fields on a
+        # small screen for no everyday benefit. Reachable from View menu.
         self._mgr.AddPane(
             self.hex_view,
             wx.aui.AuiPaneInfo()
@@ -86,7 +92,8 @@ class MainFrame(wx.Frame):
             .Caption("Hex")
             .MinSize(self.FromDIP((-1, 160)))
             .BestSize(self.FromDIP((-1, 220)))
-            .CloseButton(False),
+            .CloseButton(False)
+            .Hide(),
         )
         self._mgr.AddPane(
             self.record_editor,
@@ -132,6 +139,13 @@ class MainFrame(wx.Frame):
         self._append(edit_menu, wx.ID_REDO, "&Redo\tCtrl+Shift+Z", self._on_redo)
         menu_bar.Append(edit_menu, "&Edit")
 
+        view_menu = wx.Menu()
+        self._hex_view_item = view_menu.AppendCheckItem(
+            wx.ID_ANY, "&Hex View", "Show the raw hex dump of the resource being edited"
+        )
+        self.Bind(wx.EVT_MENU, self._on_toggle_hex_view, self._hex_view_item)
+        menu_bar.Append(view_menu, "&View")
+
         self.SetMenuBar(menu_bar)
 
     def _build_toolbar(self) -> None:
@@ -146,6 +160,11 @@ class MainFrame(wx.Frame):
         self.Bind(wx.EVT_TOOL, self._on_save, id=wx.ID_SAVE)
         self.Bind(wx.EVT_TOOL, self._on_undo, id=wx.ID_UNDO)
         self.Bind(wx.EVT_TOOL, self._on_redo, id=wx.ID_REDO)
+
+    def _on_toggle_hex_view(self, _evt) -> None:
+        pane = self._mgr.GetPane(self.hex_view)
+        pane.Show(self._hex_view_item.IsChecked())
+        self._mgr.Update()
 
     def _append(self, menu: wx.Menu, item_id, label: str, handler) -> None:
         item = menu.Append(item_id, label)
@@ -187,22 +206,23 @@ class MainFrame(wx.Frame):
         if is_dbpf:
             source = DbpfEffDirSource()
             try:
-                tgis = source.list_effdir_tgis(path)
+                entries = source.list_effdir_entries(path)
             except Exception as exc:
                 wx.MessageBox(f"Could not read package:\n{exc}", "Open failed", wx.OK | wx.ICON_ERROR)
                 return
-            if not tgis:
+            if not entries:
                 wx.MessageBox("No EFFDIR resources found in this package.", "Open failed", wx.OK | wx.ICON_ERROR)
                 return
-            if len(tgis) == 1:
-                tgi = tgis[0]
+            if len(entries) == 1:
+                tgi = entries[0].tgi
             else:
-                with wx.SingleChoiceDialog(
-                    self, f"{len(tgis)} EFFDIR resources found in this package:", "Choose Resource", tgis
-                ) as choice_dlg:
-                    if choice_dlg.ShowModal() != wx.ID_OK:
+                with EffDirPickerDialog(self, entries) as picker:
+                    if picker.ShowModal() != wx.ID_OK:
                         return
-                    tgi = choice_dlg.GetStringSelection()
+                    selected = picker.selected_tgi()
+                    if selected is None:
+                        return
+                    tgi = selected
         else:
             source = LocalFileEffDirSource()
         handle = ResourceHandle(package_path=path, tgi=tgi)
@@ -292,6 +312,27 @@ class MainFrame(wx.Frame):
             return
         suffix = "_full" if transitive else ""
         self._save_fx_result(result, f"effect_{index}{suffix}.fx")
+
+    def _export_preview_fx(self, path: str) -> None:
+        """Export whatever the FX Preview tab is currently showing -- routes
+        to the effect-specific flow for an effect (matching the tab's own
+        non-transitive preview) or the generic descriptor flow otherwise."""
+
+        tokens = _paths.tokenize(path)
+        if tokens and tokens[0] == "effect_descriptions":
+            self._export_effect_fx(path, transitive=False)
+        else:
+            self._export_descriptor_fx(path)
+
+    def _export_descriptor_fx(self, path: str) -> None:
+        if self.session is None:
+            return
+        result = _fx.emit_descriptor(self.session.working, path)
+        if result is None:
+            wx.MessageBox("Could not export this record.", "Export failed", wx.OK | wx.ICON_ERROR)
+            return
+        safe_name = path.replace("[", "_").replace("]", "").replace(".", "_")
+        self._save_fx_result(result, f"{safe_name}.fx")
 
     def _save_fx_result(self, result: _fx.FxEmitResult, default_file: str) -> None:
         # Preview first: the export is lossy by nature, so the coverage
@@ -439,11 +480,16 @@ class MainFrame(wx.Frame):
             remove_item = menu.Append(ID_REMOVE_RECORD, "Remove")
             self.Bind(wx.EVT_MENU, lambda e, p=path: self._remove_record(p), remove_item)
         tokens = _paths.tokenize(path)
-        if kind == "record" and len(tokens) == 2 and tokens[0] == "effect_descriptions" and isinstance(tokens[1], int):
-            export_item = menu.Append(wx.ID_ANY, "Export Effect as .fx...")
-            self.Bind(wx.EVT_MENU, lambda e, p=path: self._export_effect_fx(p, transitive=False), export_item)
-            export_all_item = menu.Append(wx.ID_ANY, "Export Effect + Dependencies as .fx...")
-            self.Bind(wx.EVT_MENU, lambda e, p=path: self._export_effect_fx(p, transitive=True), export_all_item)
+        if kind == "record" and len(tokens) >= 2 and isinstance(tokens[-1], int):
+            parent_collection = _paths.format_tokens(tokens[:-1])
+            if parent_collection == "effect_descriptions":
+                export_item = menu.Append(wx.ID_ANY, "Export Effect as .fx...")
+                self.Bind(wx.EVT_MENU, lambda e, p=path: self._export_effect_fx(p, transitive=False), export_item)
+                export_all_item = menu.Append(wx.ID_ANY, "Export Effect + Dependencies as .fx...")
+                self.Bind(wx.EVT_MENU, lambda e, p=path: self._export_effect_fx(p, transitive=True), export_all_item)
+            elif parent_collection in _fx.PREVIEWABLE_COLLECTIONS:
+                export_item = menu.Append(wx.ID_ANY, "Export as .fx...")
+                self.Bind(wx.EVT_MENU, lambda e, p=path: self._export_descriptor_fx(p), export_item)
 
         if menu.GetMenuItemCount():
             self.tree.tree.PopupMenu(menu)

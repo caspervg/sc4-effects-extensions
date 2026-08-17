@@ -13,6 +13,7 @@ from typing import Callable, Optional
 import wx
 import wx.propgrid as wxpg
 
+from .. import fx as _fx
 from ..bindings.bitfields import named_bits
 from ..editor import api
 from ..editor.curves import curve_info
@@ -28,6 +29,7 @@ from ..editor.session import EditorSession
 from ..model.decal import DecalDescriptor, effective_flags, effective_repeat_mode
 from ..wire import Bounds2, Bounds3, Raw, Vec2, Vec3, WireString, WireVector
 from .curve_view import edit_curve_dialog
+from .fx_preview import FxPreview
 
 _KEY_LABEL_SUBSTRINGS = ("key", "_id")
 
@@ -139,12 +141,19 @@ def _looks_like_key(label: str) -> bool:
 
 
 class RecordEditor(wx.Panel):
-    def __init__(self, parent, on_change: Callable[[str], None], on_navigate: Optional[Callable[[str], None]] = None):
+    def __init__(
+        self,
+        parent,
+        on_change: Callable[[str], None],
+        on_navigate: Optional[Callable[[str], None]] = None,
+        on_export: Optional[Callable[[str], None]] = None,
+    ):
         super().__init__(parent)
         self._session: Optional[EditorSession] = None
         self._record_path: Optional[str] = None
         self._on_change = on_change
         self._on_navigate = on_navigate
+        self._on_export = on_export
         self._references: list = []
         self._outgoing_references: list = []
         self._reference_rows: list = []
@@ -176,14 +185,23 @@ class RecordEditor(wx.Panel):
         header_layout.Add(self.record_status, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, self.FromDIP(8))
         self.header.SetSizer(header_layout)
 
-        self.field_filter = wx.SearchCtrl(self.editor_panel, style=wx.TE_PROCESS_ENTER)
+        self.notebook = wx.Notebook(self.editor_panel)
+        self.properties_page = wx.Panel(self.notebook)
+        self.fx_preview_page = wx.Panel(self.notebook)
+        self.notebook.AddPage(self.properties_page, "Properties")
+        # "FX Preview" is inserted/removed on selection change rather than
+        # kept always present -- most collections (brush/attractor/
+        # scrubber/sound/camera) have no standalone fx spelling, and a tab
+        # that's usually a placeholder is worse than no tab.
+
+        self.field_filter = wx.SearchCtrl(self.properties_page, style=wx.TE_PROCESS_ENTER)
         self.field_filter.SetDescriptiveText("Filter fields by name or path")
         self.field_filter.ShowCancelButton(True)
-        self.filter_status = wx.StaticText(self.editor_panel, label="")
+        self.filter_status = wx.StaticText(self.properties_page, label="")
         self.filter_status.SetFont(self.filter_status.GetFont().Smaller())
 
         self.grid = wxpg.PropertyGridManager(
-            self.editor_panel,
+            self.properties_page,
             style=wxpg.PG_SPLITTER_AUTO_CENTER | wxpg.PGMAN_DEFAULT_STYLE | wxpg.PG_TOOLTIPS,
         )
         self.grid.AddPage("Fields")
@@ -200,8 +218,19 @@ class RecordEditor(wx.Panel):
         self.grid.SetWindowStyleFlag(
             self.grid.GetWindowStyleFlag() & ~wxpg.PG_SPLITTER_AUTO_CENTER
         )
-        self.detail = wx.StaticText(self.editor_panel, label=" ")
+        self.detail = wx.StaticText(self.properties_page, label=" ")
         self.detail.SetFont(self.detail.GetFont().Smaller())
+
+        # FX Preview: live decompiled `.fx` text for the selected record,
+        # sharing the same read-only styled widget the export dialog uses.
+        # Only particle/decal/shake/light/dynamic-particle/sequence/effect
+        # records have a standalone fx spelling (fx.PREVIEWABLE_COLLECTIONS);
+        # anything else shows a placeholder instead of a blank tab.
+        self.fx_preview_status = wx.StaticText(self.fx_preview_page, label="")
+        self.fx_preview_status.SetFont(self.fx_preview_status.GetFont().Smaller())
+        self.fx_preview_copy = wx.Button(self.fx_preview_page, label="Copy to Clipboard")
+        self.fx_preview_export = wx.Button(self.fx_preview_page, label="Export as .fx...")
+        self.fx_preview = FxPreview(self.fx_preview_page)
 
         self.references_label = wx.StaticText(self.references_panel, label="References · 0 in · 0 out")
         reference_font = self.references_label.GetFont()
@@ -217,14 +246,28 @@ class RecordEditor(wx.Panel):
         self.references_list.InsertColumn(3, "Info", width=self.FromDIP(520))
         self.references_list.SetMinSize(self.FromDIP((-1, 96)))
 
-        editor_sizer = wx.BoxSizer(wx.VERTICAL)
-        editor_sizer.Add(self.header, 0, wx.EXPAND | wx.ALL, self.FromDIP(6))
+        properties_sizer = wx.BoxSizer(wx.VERTICAL)
         filter_row = wx.BoxSizer(wx.HORIZONTAL)
         filter_row.Add(self.field_filter, 1, wx.EXPAND)
         filter_row.Add(self.filter_status, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, self.FromDIP(8))
-        editor_sizer.Add(filter_row, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, self.FromDIP(6))
-        editor_sizer.Add(self.grid, 1, wx.EXPAND)
-        editor_sizer.Add(self.detail, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, self.FromDIP(6))
+        properties_sizer.Add(filter_row, 0, wx.EXPAND | wx.ALL, self.FromDIP(6))
+        properties_sizer.Add(self.grid, 1, wx.EXPAND)
+        properties_sizer.Add(self.detail, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, self.FromDIP(6))
+        self.properties_page.SetSizer(properties_sizer)
+
+        fx_preview_header = wx.BoxSizer(wx.HORIZONTAL)
+        fx_preview_header.Add(self.fx_preview_status, 1, wx.ALIGN_CENTER_VERTICAL)
+        fx_preview_header.Add(self.fx_preview_copy, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, self.FromDIP(6))
+        fx_preview_header.Add(self.fx_preview_export, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, self.FromDIP(6))
+
+        fx_preview_sizer = wx.BoxSizer(wx.VERTICAL)
+        fx_preview_sizer.Add(fx_preview_header, 0, wx.EXPAND | wx.ALL, self.FromDIP(6))
+        fx_preview_sizer.Add(self.fx_preview, 1, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, self.FromDIP(6))
+        self.fx_preview_page.SetSizer(fx_preview_sizer)
+
+        editor_sizer = wx.BoxSizer(wx.VERTICAL)
+        editor_sizer.Add(self.header, 0, wx.EXPAND | wx.ALL, self.FromDIP(6))
+        editor_sizer.Add(self.notebook, 1, wx.EXPAND)
         self.editor_panel.SetSizer(editor_sizer)
 
         references_sizer = wx.BoxSizer(wx.VERTICAL)
@@ -245,6 +288,66 @@ class RecordEditor(wx.Panel):
         self.references_list.Bind(wx.EVT_LIST_ITEM_ACTIVATED, self._on_reference_activated)
         self.references_list.Bind(wx.EVT_CONTEXT_MENU, self._on_reference_context)
         self.references_list.Bind(wx.EVT_SIZE, self._on_references_size)
+        self.fx_preview_copy.Bind(wx.EVT_BUTTON, self._on_fx_copy)
+        self.fx_preview_export.Bind(wx.EVT_BUTTON, self._on_fx_export)
+        self._update_fx_preview()
+
+    def _fx_preview_path(self, path: Optional[str]) -> Optional[str]:
+        """Walk up from `path` to the nearest ancestor that is a single item
+        of a collection the fx decompiler can preview standalone (see
+        fx.PREVIEWABLE_COLLECTIONS). Returns None if no such ancestor
+        exists, e.g. the path is inside a brush/attractor/scrubber/sound/
+        camera record, which only exists inline inside an effect body."""
+
+        if not path:
+            return None
+        tokens = _paths.tokenize(path)
+        for end in range(len(tokens), 1, -1):
+            if not isinstance(tokens[end - 1], int):
+                continue
+            collection = _paths.format_tokens(tokens[: end - 1])
+            if collection in _fx.PREVIEWABLE_COLLECTIONS:
+                return _paths.format_tokens(tokens[:end])
+        return None
+
+    def _update_fx_preview(self) -> None:
+        path = self._fx_preview_path(self._record_path)
+        result = None
+        if self._session is not None and path is not None:
+            result = _fx.emit_descriptor(self._session.working, path)
+        self._set_fx_tab_visible(result is not None)
+        if result is None:
+            self.fx_preview.set_text("")
+            self.fx_preview_status.SetLabel("")
+            return
+        self.fx_preview.set_text(result.text)
+        self.fx_preview_status.SetLabel(f"{path}   —   " + " · ".join(result.coverage.summary_lines()))
+
+    def _on_fx_copy(self, _evt) -> None:
+        text = self.fx_preview.GetText()
+        if not text or not wx.TheClipboard.Open():
+            return
+        try:
+            wx.TheClipboard.SetData(wx.TextDataObject(text))
+        finally:
+            wx.TheClipboard.Close()
+
+    def _on_fx_export(self, _evt) -> None:
+        path = self._fx_preview_path(self._record_path)
+        if path is None or self._on_export is None:
+            return
+        self._on_export(path)
+
+    def _set_fx_tab_visible(self, visible: bool) -> None:
+        index = self.notebook.FindPage(self.fx_preview_page)
+        if visible and index == -1:
+            self.notebook.InsertPage(1, self.fx_preview_page, "FX Preview")
+        elif not visible and index != -1:
+            # Switch away first: removing the active page can otherwise
+            # leave the notebook with no visible selection.
+            if self.notebook.GetSelection() == index:
+                self.notebook.SetSelection(0)
+            self.notebook.RemovePage(index)
 
     def show_record(self, session: EditorSession, path: Optional[str]) -> None:
         if path and isinstance(_paths.get_path(session.working, path), WireVector):
@@ -264,6 +367,7 @@ class RecordEditor(wx.Panel):
             self.grid.RefreshGrid()
             self._show_references(False)
             self._set_record_header(None, None)
+            self._update_fx_preview()
             return
 
         self._reference_index = build_reference_index(session.working)
@@ -315,6 +419,7 @@ class RecordEditor(wx.Panel):
         self._refresh_color_previews()
         self._apply_field_filter()
         self.grid.RefreshGrid()
+        self._update_fx_preview()
 
     def show_collection(self, session: EditorSession, path: str) -> None:
         self._session = session
@@ -344,6 +449,7 @@ class RecordEditor(wx.Panel):
         self.detail.SetLabel(f"{path}   —   collection with {count} items")
         self._apply_field_filter()
         self.grid.RefreshGrid()
+        self._update_fx_preview()
 
     def _add_record_children(self, page, parent, path: str) -> None:
         """Recursively expose a dataclass record beneath a property row."""
@@ -734,6 +840,7 @@ class RecordEditor(wx.Panel):
             self._refresh_bitset_properties(path)
             self._refresh_semantic_previews(path)
             self._refresh_record_header()
+            self._update_fx_preview()
             self._on_change(path)
             return
         path = client_data[1] if isinstance(client_data, tuple) and client_data and client_data[0] == "path" else prop.GetName()
@@ -762,6 +869,7 @@ class RecordEditor(wx.Panel):
         self._refresh_vector_summary(path)
         self._refresh_semantic_previews(path)
         self._refresh_record_header()
+        self._update_fx_preview()
         self._on_change(path)
 
     def _refresh_bitset_properties(self, path: str) -> None:
@@ -902,6 +1010,7 @@ class RecordEditor(wx.Panel):
                 child.SetValue(value)
         self._refresh_record_header()
         self.grid.RefreshGrid()
+        self._update_fx_preview()
         self._on_change(path)
 
     def _on_prop_selected(self, event: wxpg.PropertyGridEvent) -> None:
@@ -1054,10 +1163,14 @@ class RecordEditor(wx.Panel):
     def _show_references(self, visible: bool) -> None:
         if visible:
             if not self.reference_splitter.IsSplit():
+                # Negative sash position = distance from the bottom, so the
+                # references panel opens at a compact fixed height instead
+                # of claiming half the pane (or more, on a small screen)
+                # from a plain top-down offset.
                 self.reference_splitter.SplitHorizontally(
                     self.editor_panel,
                     self.references_panel,
-                    self.FromDIP(500),
+                    -self.FromDIP(160),
                 )
             self.reference_splitter.SetSashGravity(0.9)
             self.references_panel.Show()

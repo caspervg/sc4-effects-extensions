@@ -27,12 +27,9 @@ from .shakes import emit_shake
 from .writer import FxWriter, fmt_hex, fmt_num, quote_name
 
 _HEADER = (
-    "This file was decompiled from a packed EFFDIR resource by the effdir-editor. "
-    "It is a best-effort, one-way reconstruction: compilation is lossy (comments, "
-    "macros, variables, and namespaces do not survive it), several fx spellings "
-    "collapse onto the same stored bytes, and some fields have no confirmed fx "
-    "syntax yet. See the coverage report alongside this export for exactly what "
-    "could not be represented."
+    "This file was decompiled from an EFFDIR resource. It is a lossy, "
+    "one-way reconstruction. See the coverage report for what could not "
+    "be represented."
 )
 
 
@@ -203,6 +200,85 @@ def _emit_bindings(writer: FxWriter, resource: EffDirResource) -> None:
 
     for trigger in resource.message_triggers.items:
         writer.line(f"messageTrigger {fmt_hex(trigger.message_id.value)} {quote_name(trigger.effect_name.decoded or '')}")
+
+
+PREVIEWABLE_COLLECTIONS = frozenset(
+    {
+        "effect_descriptions",
+        "particles",
+        "decals",
+        "shakes",
+        "lights",
+        "dynamic_particles",
+        "components.sequences",
+    }
+)
+
+
+def emit_descriptor(resource: EffDirResource, path: str) -> Optional[FxEmitResult]:
+    """Decompile the single record at `path` on its own.
+
+    For a live, per-selection preview (as opposed to a full resource or
+    effect export). `effect_descriptions[i]` delegates to
+    `emit_effect_closure` one level deep (not transitive), since an
+    effect's own fx spelling depends on the pools its children reach. A
+    pool record (particle/decal/shake/light/dynamic particle/sequence) is
+    emitted alone, using the same name resolution a full export would use.
+    Anything else -- a raw field, or a record from a collection with no
+    standalone fx spelling (brush/attractor/scrubber/sound/camera only
+    exist inline inside an effect body) -- returns None.
+    """
+
+    from ..editor import paths as _paths
+
+    tokens = _paths.tokenize(path)
+    if len(tokens) < 2 or not isinstance(tokens[-1], int):
+        return None
+    index = tokens[-1]
+    collection = _paths.format_tokens(tokens[:-1])
+    if collection not in PREVIEWABLE_COLLECTIONS:
+        return None
+
+    if collection == "effect_descriptions":
+        return emit_effect_closure(resource, index, transitive=False)
+
+    coverage = Coverage()
+    writer = FxWriter()
+    names = resolve_names(resource, coverage)
+
+    if collection == "particles" and 0 <= index < len(resource.particles.items):
+        item = resource.particles.items[index]
+        name = names.by_collection.get(("particles", index), f"particle_{index}")
+        note_non_finite_floats(item, path, coverage)
+        emit_particles(writer, coverage, name, item, path=path)
+    elif collection == "decals" and 0 <= index < len(resource.decals.items):
+        item = resource.decals.items[index]
+        name = names.by_collection.get(("decals", index), f"decal_{index}")
+        note_non_finite_floats(item, path, coverage)
+        emit_decal(writer, coverage, name, item, path=path)
+    elif collection == "shakes" and 0 <= index < len(resource.shakes.items):
+        item = resource.shakes.items[index]
+        name = names.shakes.get(index, f"shake_{index}")
+        note_non_finite_floats(item, path, coverage)
+        emit_shake(writer, coverage, name, item, path=path)
+    elif collection == "lights" and 0 <= index < len(resource.lights.items):
+        item = resource.lights.items[index]
+        name = names.lights.get(index, f"light_{index}")
+        note_non_finite_floats(item, path, coverage)
+        emit_light(writer, coverage, name, item, path=path)
+    elif collection == "dynamic_particles" and 0 <= index < len(resource.dynamic_particles.items):
+        item = resource.dynamic_particles.items[index]
+        name = names.by_collection.get(("dynamic_particles", index), f"dynamic_particle_{index}")
+        note_non_finite_floats(item, path, coverage)
+        emit_dynamic_particle(writer, coverage, name, item, path=path)
+    elif collection == "components.sequences" and 0 <= index < len(resource.components.sequences.items):
+        item = resource.components.sequences.items[index]
+        name = names.by_collection.get(("components.sequences", index), f"sequence_{index}")
+        emit_sequence(writer, coverage, name, item, path=path)
+    else:
+        return None
+
+    return FxEmitResult(text=writer.text(), coverage=coverage)
 
 
 def emit_resource(resource: EffDirResource) -> FxEmitResult:

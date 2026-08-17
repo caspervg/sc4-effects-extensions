@@ -63,7 +63,17 @@ class ResolvedNames:
             return f"unknown_component_{component_type}_{index}"
         return self.by_collection.get((collection[0], index), f"{collection[1]}_{index}")
 
-def resolve_names(resource: EffDirResource, coverage: Coverage) -> ResolvedNames:
+def resolve_names(resource: EffDirResource, coverage: Coverage, *, synthesize_orphans: bool = True) -> ResolvedNames:
+    """Resolve every pool's canonical name.
+
+    With `synthesize_orphans=True` (the default, used for fx export) every
+    pool entry gets a name, real or synthesized placeholder, since the fx
+    language has no anonymous pool syntax. With `False`, an entry with no
+    real name anywhere just stays absent from the resulting dicts -- for a
+    caller (the resource tree) that wants to show a name only when there is
+    a genuine one to show, not a restated index.
+    """
+
     resolved = ResolvedNames()
 
     for i, entry in enumerate(resource.effect_name_map.items):
@@ -102,7 +112,8 @@ def resolve_names(resource: EffDirResource, coverage: Coverage) -> ResolvedNames
                 resolved.lights.setdefault(index, name)
 
     _fill_intrinsic_component_names(resource, resolved)
-    _fill_orphans(resource, resolved, coverage)
+    if synthesize_orphans:
+        _fill_orphans(resource, resolved, coverage)
     return resolved
 
 

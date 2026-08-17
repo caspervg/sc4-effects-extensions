@@ -38,6 +38,20 @@ class WriteResult:
     warnings: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class EffDirEntryInfo:
+    """Cheap, index-only description of one EFFDIR-type DBPF entry -- no
+    decompression or parsing of its payload, so a package with several
+    EFFDIR resources (e.g. from different mods) can be listed instantly."""
+
+    tgi: str
+    type_id: int
+    group_id: int
+    instance_id: int
+    size: int
+    compressed: bool
+
+
 class EffDirSource(abc.ABC):
     @abc.abstractmethod
     def inspect(self, handle: ResourceHandle):
@@ -57,14 +71,29 @@ class EffDirSource(abc.ABC):
 
 
 class DbpfEffDirSource(EffDirSource):
-    def list_effdir_tgis(self, package_path: str) -> List[str]:
-        """TGI strings of every EFFDIR-type resource in the package, so the
-        UI can offer a picker instead of always opening the default TGI --
-        a package can carry more than one EFFDIR resource."""
+    def list_effdir_entries(self, package_path: str) -> List[EffDirEntryInfo]:
+        """Every EFFDIR-type resource in the package, with the metadata the
+        DBPF index already carries for free (size, compression) -- so the
+        UI can offer a picker instead of always opening the default TGI,
+        without decompressing or parsing any entry's payload."""
 
         archive = DbpfArchive.open(package_path)
         effdir_type = Tgi.parse(DEFAULT_EFFDIR_TGI).type_id
-        return sorted(str(e.tgi) for e in archive.list_entries() if e.tgi.type_id == effdir_type)
+        entries = sorted(
+            (e for e in archive.list_entries() if e.tgi.type_id == effdir_type),
+            key=lambda e: str(e.tgi),
+        )
+        return [
+            EffDirEntryInfo(
+                tgi=str(e.tgi),
+                type_id=e.tgi.type_id,
+                group_id=e.tgi.group_id,
+                instance_id=e.tgi.instance_id,
+                size=e.size,
+                compressed=archive.is_compressed(e.tgi),
+            )
+            for e in entries
+        ]
 
     def inspect(self, handle: ResourceHandle):
         archive = DbpfArchive.open(handle.package_path)

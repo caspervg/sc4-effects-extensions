@@ -21,6 +21,8 @@ from ..editor import paths as _paths
 from ..editor.references import build_reference_index
 from ..editor.search import find_nodes
 from ..editor.session import EditorSession
+from ..fx.coverage import Coverage
+from ..fx.names import ResolvedNames, resolve_names
 
 _EXPANDABLE_KINDS = {"record", "collection"}
 _SEARCH_DEBOUNCE_MS = 200
@@ -35,6 +37,7 @@ class ResourceTree(wx.Panel):
         self._search_cursor = -1
         self._search_timer: Optional[wx.CallLater] = None
         self._suppress_selection = False
+        self._resolved_names: Optional[ResolvedNames] = None
 
         self.search = wx.SearchCtrl(self, style=wx.TE_PROCESS_ENTER)
         self.search.SetDescriptiveText("Filter (Enter for next match)")
@@ -45,7 +48,6 @@ class ResourceTree(wx.Panel):
         self.tree = dv.TreeListCtrl(self, style=dv.TL_SINGLE)
         self.tree.AppendColumn("Node", width=self.FromDIP(440))
         self.tree.AppendColumn("Type", width=160)
-        self.tree.AppendColumn("Evidence", width=90)
         self.tree.AppendColumn("Refs", width=50)
 
         sizer = wx.BoxSizer(wx.VERTICAL)
@@ -69,6 +71,12 @@ class ResourceTree(wx.Panel):
 
     def _rebuild(self) -> None:
         self.tree.DeleteAllItems()
+        # Computed once per rebuild (not per node/expand) since it walks the
+        # whole resource -- refresh() re-expands every previously-open path
+        # on every field edit, and re-running a full resource walk per node
+        # in that loop would turn one edit into an O(nodes) resource scan.
+        assert self._session is not None
+        self._resolved_names = resolve_names(self._session.working, Coverage(), synthesize_orphans=False)
         root = self.tree.GetRootItem()
         self._append_children(root, "")
 
@@ -132,15 +140,15 @@ class ResourceTree(wx.Panel):
         new_paths = self._session.new_paths
         for summary in api.list_nodes(self._session, path or None):
             label = self._short_label(summary.path)
-            if summary.display_name:
-                label = f'{self._named_item_label(summary.path)} "{summary.display_name}"'
+            display_name = summary.display_name or self._pool_name(summary.path)
+            if display_name:
+                label = f'{self._named_item_label(summary.path)} "{display_name}"'
             if summary.path in new_paths:
                 label += " *"
             item = self.tree.AppendItem(parent_item, label)
             self.tree.SetItemText(item, 1, summary.record_type)
-            self.tree.SetItemText(item, 2, summary.evidence)
             if summary.reference_count:
-                self.tree.SetItemText(item, 3, str(summary.reference_count))
+                self.tree.SetItemText(item, 2, str(summary.reference_count))
             self.tree.SetItemData(item, summary.path)
             kind = self._kind_of(summary.path)
             if kind in _EXPANDABLE_KINDS and self._has_children(summary.path):
@@ -168,6 +176,28 @@ class ResourceTree(wx.Panel):
         if tail.endswith("]") and "[" in tail:
             return tail[tail.rfind("[") :]
         return tail
+
+    def _pool_name(self, path: str) -> Optional[str]:
+        """Canonical name for a pool item (particle/decal/shake/light/
+        dynamic particle/sequence/brush/attractor/scrubber/sound/camera),
+        resolved the same way the fx decompiler names them -- from
+        wherever they're referenced, since none of these records carry a
+        name field of their own. `resolve_display_name` (nodes.py) already
+        covers effect_descriptions and other self-named records, so this
+        only fills the gap for pool collections it doesn't touch."""
+
+        if self._resolved_names is None:
+            return None
+        tokens = _paths.tokenize(path)
+        if len(tokens) < 2 or not isinstance(tokens[-1], int):
+            return None
+        index = tokens[-1]
+        collection = _paths.format_tokens(tokens[:-1])
+        if collection == "shakes":
+            return self._resolved_names.shakes.get(index)
+        if collection == "lights":
+            return self._resolved_names.lights.get(index)
+        return self._resolved_names.by_collection.get((collection, index))
 
     def _kind_of(self, path: str) -> str:
         from ..editor import nodes as _nodes

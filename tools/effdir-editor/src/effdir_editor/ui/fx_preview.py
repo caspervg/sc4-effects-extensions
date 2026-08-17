@@ -49,6 +49,18 @@ class FxPreview(stc.StyledTextCtrl):
         self.SetUseTabs(False)
         self._apply_theme()
         self.Bind(stc.EVT_STC_STYLENEEDED, self._on_style_needed)
+        # Styling is applied once, not recomputed per paint like the hex
+        # view's custom drawing, so a live day/night switch needs its own
+        # event -- otherwise this stays on whatever theme was active when
+        # the widget was created until the app restarts.
+        self.Bind(wx.EVT_SYS_COLOUR_CHANGED, self._on_sys_colour_changed)
+
+    def _on_sys_colour_changed(self, evt: wx.SysColourChangedEvent) -> None:
+        evt.Skip()
+        self._apply_theme()
+        # StyleSetForeground/Background alone don't repaint already-styled
+        # text; force every position to be re-styled under the new colours.
+        self.Colourise(0, -1)
 
     def _apply_theme(self) -> None:
         # Follow the system theme rather than hard-coding light colours:
@@ -58,7 +70,7 @@ class FxPreview(stc.StyledTextCtrl):
         sys_fg = wx.SystemSettings.GetColour(wx.SYS_COLOUR_WINDOWTEXT)
         dark = sys_bg.GetLuminance() < 0.5 if hasattr(sys_bg, "GetLuminance") else False
 
-        font = wx.Font(wx.FontInfo(10).Family(wx.FONTFAMILY_TELETYPE))
+        font = wx.Font(wx.FontInfo(12).Family(wx.FONTFAMILY_TELETYPE))
         self.StyleSetFont(stc.STC_STYLE_DEFAULT, font)
         self.StyleSetBackground(stc.STC_STYLE_DEFAULT, sys_bg)
         self.StyleSetForeground(stc.STC_STYLE_DEFAULT, sys_fg)
@@ -140,7 +152,12 @@ class FxPreviewDialog(wx.Dialog):
         notes_sizer.Add(self.notes, 1, wx.EXPAND | wx.ALL, self.FromDIP(6))
         notes_panel.SetSizer(notes_sizer)
 
-        splitter.SplitHorizontally(self.preview, notes_panel)
+        # A bare SplitHorizontally() with no sash position lets wx compute
+        # one from each pane's best size, which gives the notes ListCtrl
+        # (four report columns) far more height than it needs by default.
+        # Fix the notes panel to a compact height instead and let the
+        # preview take the rest; gravity keeps that allocation on resize.
+        splitter.SplitHorizontally(self.preview, notes_panel, -self.FromDIP(160))
         splitter.SetSashGravity(0.9)
         splitter.SetMinimumPaneSize(self.FromDIP(120))
 

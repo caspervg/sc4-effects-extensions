@@ -20,9 +20,12 @@ separate curve samples.
 from __future__ import annotations
 
 import math
+import textwrap
 from typing import Iterable, List, Sequence
 
 from ..wire import Vec2, Vec3
+
+_COMMENT_WRAP_WIDTH = 100
 
 
 def is_emittable_float(value: float) -> bool:
@@ -149,9 +152,14 @@ class FxWriter:
 
     def comment(self, text: str) -> None:
         """`docs/syntax/comments.md`: the only confirmed comment form is
-        the block form `#< ... #>`, on one line here."""
+        the block form `#< ... #>`. Long text (the export disclaimer) is
+        wrapped across several short `#< ... #>` lines instead of one very
+        long one -- every other emitted line is short, so a single long
+        comment line forces a wide horizontal scrollbar the rest of the
+        text never needs."""
 
-        self.line(f"#< {text} #>")
+        for chunk in textwrap.wrap(text, width=_COMMENT_WRAP_WIDTH) or [text]:
+            self.line(f"#< {chunk} #>")
 
     def begin(self, header: str) -> None:
         self.line(header)

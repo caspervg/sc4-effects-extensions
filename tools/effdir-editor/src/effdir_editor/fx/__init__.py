@@ -18,6 +18,11 @@ Public API:
     emit_effect_closure(resource, effect_index) -> FxEmitResult | None
         Decompile one effect plus the named pools it actually reaches.
 
+    emit_descriptor(resource, path) -> FxEmitResult | None
+        Decompile the single record at `path` on its own, for a live,
+        per-selection preview. See PREVIEWABLE_COLLECTIONS for which
+        collections have a standalone fx spelling.
+
 Both return an `FxEmitResult(text, coverage)`; `coverage` is a
 `Coverage` (see coverage.py) recording, for every field this package
 knows how to consider, whether it was represented in `text` and why not
@@ -27,12 +32,14 @@ when it wasn't.
 from __future__ import annotations
 
 from .coverage import Coverage, CoverageNote, FxEmitResult
-from .resource import emit_effect_closure, emit_resource
+from .resource import PREVIEWABLE_COLLECTIONS, emit_descriptor, emit_effect_closure, emit_resource
 
 __all__ = [
     "Coverage",
     "CoverageNote",
     "FxEmitResult",
+    "PREVIEWABLE_COLLECTIONS",
     "emit_resource",
     "emit_effect_closure",
+    "emit_descriptor",
 ]
