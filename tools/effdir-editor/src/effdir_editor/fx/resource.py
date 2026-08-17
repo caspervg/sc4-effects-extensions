@@ -6,7 +6,12 @@ syntax/overview.md, "Practical model"): named pools first (`particles`,
 `decal`, `shake`, `light`, `dynamicParticle`, `sequenceEffect`), then `effect`
 blocks that reference them, then the two effect-name bindings
 (`effectID`/`effectGroup`, `messageTrigger`) that reference effects by
-name and so must come after they exist.
+name and so must come after they exist. Within the `effect` blocks
+themselves, effect-to-effect references (`visualEffect` and friends -- see
+`_effect_reference_order`) impose their own dependency order: a
+`visualEffect` target must already exist when the referencing effect is
+parsed, so effects are topologically sorted rather than emitted in raw
+record order.
 """
 
 from __future__ import annotations
@@ -159,7 +164,14 @@ def _emit_pools(writer: FxWriter, coverage: Coverage, resource: EffDirResource, 
 
 
 def _emit_effects(writer: FxWriter, coverage: Coverage, resource: EffDirResource, names: ResolvedNames) -> None:
-    for effect_index, effect in enumerate(resource.effect_descriptions.items):
+    # visualEffect requires its target to already be defined
+    # (docs/reference/effect-children/visual-effect.md), so raw record
+    # order is not safe to emit directly -- an effect referencing a later
+    # one via visualEffect would come before its own dependency exists.
+    all_indices = list(range(len(resource.effect_descriptions.items)))
+    order, _pools = _effect_reference_order(resource, all_indices, coverage, unresolved_note_path=None)
+    for effect_index in order:
+        effect = resource.effect_descriptions.items[effect_index]
         aliases = names.effect_names.get(effect_index, [])
         aliases = [a for a in aliases if a] or [f"effect_{effect_index}"]
         primary, *extra = aliases
@@ -381,47 +393,90 @@ def _effect_names_referenced_by(resource: EffDirResource, effect_index: int, poo
     return found
 
 
-def _transitive_closure(resource: EffDirResource, start: int, coverage: Coverage) -> Tuple[List[int], Set[Tuple[str, int]]]:
-    """Breadth-first walk over effect -> effect references.
+def _effect_reference_order(
+    resource: EffDirResource,
+    starts: List[int],
+    coverage: Coverage,
+    *,
+    unresolved_note_path: Optional[str],
+) -> Tuple[List[int], Set[Tuple[str, int]]]:
+    """Depth-first walk over effect -> effect references (chainEffect,
+    timedEffect, visualEffect, sequence play, effectBase), starting from
+    `starts`, in dependency order.
 
-    Returns the visited effect indices in discovery order plus the union
-    of every pool they reach. Cycles are safe: an effect already visited
-    is never expanded twice. Names that resolve to nothing are reported --
-    in a multi-resource setup they legitimately live in another EFFDIR
-    (editor/references.py documents the same partial-resolution result
-    against the real vanilla file), so they are a note, not an error.
+    Returns effect indices ordered so that every effect one of those
+    references points at appears before the effect containing the
+    reference, plus the union of every pool the walk reaches.
+    `visualEffect` requires "referenced effect must already exist"
+    (docs/reference/effect-children/visual-effect.md); the other reference
+    kinds are not documented as requiring it, but ordering them the same
+    way is free and keeps the source consistently declare-before-use,
+    matching the pools-before-effects convention this module already
+    follows.
+
+    Cycles are safe: an effect already on the current DFS path is not
+    re-entered, which necessarily leaves one edge of the cycle pointing
+    forward -- no linear ordering can satisfy every edge of a cycle. That
+    edge is reported as a coverage note so the gap is visible rather than
+    silently producing a source file that may fail to load.
+
+    When `unresolved_note_path` is given, names that resolve to nothing are
+    reported against that path -- in a multi-resource setup they
+    legitimately live in another EFFDIR (editor/references.py documents the
+    same partial-resolution result against the real vanilla file), so they
+    are a note, not an error.
     """
 
     by_name = _effect_indices_by_name(resource)
-    visited: List[int] = []
-    seen: Set[int] = {start}
-    queue: List[int] = [start]
+    order: List[int] = []
+    visited: Set[int] = set()
+    on_stack: Set[int] = set()
     pools: Set[Tuple[str, int]] = set()
     unresolved: Set[str] = set()
+    forward_refs: List[Tuple[int, int]] = []
 
-    while queue:
-        current = queue.pop(0)
-        visited.append(current)
-        current_pools = _referenced_pools(resource, current)
-        pools |= current_pools
-        for name in sorted(_effect_names_referenced_by(resource, current, current_pools)):
+    def visit(index: int) -> None:
+        if index in visited:
+            return
+        on_stack.add(index)
+        current_pools = _referenced_pools(resource, index)
+        pools.update(current_pools)
+        for name in sorted(_effect_names_referenced_by(resource, index, current_pools)):
             targets = by_name.get(name.casefold())
             if not targets:
                 unresolved.add(name)
                 continue
             for target in targets:
-                if 0 <= target < len(resource.effect_descriptions.items) and target not in seen:
-                    seen.add(target)
-                    queue.append(target)
+                if not (0 <= target < len(resource.effect_descriptions.items)):
+                    continue
+                if target in on_stack:
+                    forward_refs.append((index, target))
+                elif target not in visited:
+                    visit(target)
+        on_stack.discard(index)
+        visited.add(index)
+        order.append(index)
 
-    for name in sorted(unresolved):
+    for start in starts:
+        visit(start)
+
+    if unresolved_note_path is not None:
+        for name in sorted(unresolved):
+            coverage.note(
+                unresolved_note_path,
+                "info",
+                f"referenced effect {name!r} is not defined in this resource; it was not included in the closure "
+                "(it presumably lives in another loaded EFFDIR)",
+            )
+    for referencing, referenced in forward_refs:
         coverage.note(
-            f"effect_descriptions[{start}]",
+            f"effect_descriptions[{referencing}]",
             "info",
-            f"referenced effect {name!r} is not defined in this resource; it was not included in the closure "
-            "(it presumably lives in another loaded EFFDIR)",
+            f"effect_descriptions[{referenced}] and this effect reference each other in a cycle; "
+            f"effect_descriptions[{referenced}] could not be emitted before this effect, so the exported source "
+            "may fail to load until the two are reordered by hand",
         )
-    return visited, pools
+    return order, pools
 
 
 def emit_effect_closure(
@@ -454,7 +509,9 @@ def emit_effect_closure(
     names = resolve_names(resource, coverage)
 
     if transitive:
-        effect_indices, wanted = _transitive_closure(resource, effect_index, coverage)
+        effect_indices, wanted = _effect_reference_order(
+            resource, [effect_index], coverage, unresolved_note_path=f"effect_descriptions[{effect_index}]"
+        )
     else:
         effect_indices, wanted = [effect_index], _referenced_pools(resource, effect_index)
 

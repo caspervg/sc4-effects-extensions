@@ -1006,6 +1006,44 @@ def test_transitive_closure_follows_visual_effect_component():
     assert "visualEffect B" in result.text
     assert "effect A" in result.text
     assert "effect B" in result.text
+    # visualEffect's target must already be defined when it is referenced
+    # (docs/reference/effect-children/visual-effect.md), so B must come
+    # before A even though A is the requested effect.
+    assert result.text.index("effect B") < result.text.index("effect A")
+
+
+def test_emit_resource_orders_visual_effect_target_before_referencing_effect():
+    r = default_resource()
+    visual = dataclasses.replace(
+        default_description_record(),
+        name=WireString.from_text("B"),
+        component_type=make_raw_u8(2),
+        description_index=make_raw_u32(0),
+    )
+    a = dataclasses.replace(
+        default_effect_description(),
+        descriptions=WireVector(count=1, items=[visual], source_span=None),
+    )
+    # A is recorded first but references B, so raw record order alone
+    # would emit A before its own dependency exists.
+    r.effect_descriptions.items.extend([a, default_effect_description()])
+    r.effect_name_map.items.extend(
+        [
+            StringU32Pair(name=WireString.from_text("A"), target=make_raw_u32(0)),
+            StringU32Pair(name=WireString.from_text("B"), target=make_raw_u32(1)),
+        ]
+    )
+
+    text = emit_resource(r).text
+    assert text.index("effect B") < text.index("effect A")
+
+
+def test_transitive_closure_reports_unbreakable_cycle_as_forward_reference_note():
+    result = emit_effect_closure(_chained_resource(), 0, transitive=True)
+    assert any(
+        "reference each other in a cycle" in n.message and n.path == "effect_descriptions[2]"
+        for n in result.coverage.notes
+    )
 
 
 def test_transitive_closure_terminates_on_a_reference_cycle():

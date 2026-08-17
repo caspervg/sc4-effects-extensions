@@ -146,7 +146,7 @@ class RecordEditor(wx.Panel):
         parent,
         on_change: Callable[[str], None],
         on_navigate: Optional[Callable[[str], None]] = None,
-        on_export: Optional[Callable[[str], None]] = None,
+        on_export: Optional[Callable[[str, bool], None]] = None,
     ):
         super().__init__(parent)
         self._session: Optional[EditorSession] = None
@@ -228,6 +228,12 @@ class RecordEditor(wx.Panel):
         # anything else shows a placeholder instead of a blank tab.
         self.fx_preview_status = wx.StaticText(self.fx_preview_page, label="")
         self.fx_preview_status.SetFont(self.fx_preview_status.GetFont().Smaller())
+        # Only effect_descriptions records have effect-to-effect references
+        # (chainEffect/visualEffect/timedEffect/etc.) to follow, so this is
+        # shown only while previewing an effect -- shown/hidden in
+        # _update_fx_preview, not always present. Default is unchecked to
+        # match the tab's existing one-level-deep preview.
+        self.fx_preview_dependencies = wx.CheckBox(self.fx_preview_page, label="Include dependencies")
         self.fx_preview_copy = wx.Button(self.fx_preview_page, label="Copy to Clipboard")
         self.fx_preview_export = wx.Button(self.fx_preview_page, label="Export as .fx...")
         self.fx_preview = FxPreview(self.fx_preview_page)
@@ -257,6 +263,7 @@ class RecordEditor(wx.Panel):
 
         fx_preview_header = wx.BoxSizer(wx.HORIZONTAL)
         fx_preview_header.Add(self.fx_preview_status, 1, wx.ALIGN_CENTER_VERTICAL)
+        fx_preview_header.Add(self.fx_preview_dependencies, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, self.FromDIP(6))
         fx_preview_header.Add(self.fx_preview_copy, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, self.FromDIP(6))
         fx_preview_header.Add(self.fx_preview_export, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, self.FromDIP(6))
 
@@ -290,6 +297,7 @@ class RecordEditor(wx.Panel):
         self.references_list.Bind(wx.EVT_SIZE, self._on_references_size)
         self.fx_preview_copy.Bind(wx.EVT_BUTTON, self._on_fx_copy)
         self.fx_preview_export.Bind(wx.EVT_BUTTON, self._on_fx_export)
+        self.fx_preview_dependencies.Bind(wx.EVT_CHECKBOX, self._on_fx_dependencies_toggled)
         self._update_fx_preview()
 
     def _fx_preview_path(self, path: Optional[str]) -> Optional[str]:
@@ -312,9 +320,16 @@ class RecordEditor(wx.Panel):
 
     def _update_fx_preview(self) -> None:
         path = self._fx_preview_path(self._record_path)
+        is_effect = bool(path) and _paths.tokenize(path)[0] == "effect_descriptions"
+        self.fx_preview_dependencies.Show(is_effect)
+        self.fx_preview_page.Layout()
         result = None
         if self._session is not None and path is not None:
-            result = _fx.emit_descriptor(self._session.working, path)
+            if is_effect and self.fx_preview_dependencies.GetValue():
+                index = _paths.tokenize(path)[-1]
+                result = _fx.emit_effect_closure(self._session.working, index, transitive=True)
+            else:
+                result = _fx.emit_descriptor(self._session.working, path)
         self._set_fx_tab_visible(result is not None)
         if result is None:
             self.fx_preview.set_text("")
@@ -322,6 +337,9 @@ class RecordEditor(wx.Panel):
             return
         self.fx_preview.set_text(result.text)
         self.fx_preview_status.SetLabel(f"{path}   —   " + " · ".join(result.coverage.summary_lines()))
+
+    def _on_fx_dependencies_toggled(self, _evt) -> None:
+        self._update_fx_preview()
 
     def _on_fx_copy(self, _evt) -> None:
         text = self.fx_preview.GetText()
@@ -336,7 +354,8 @@ class RecordEditor(wx.Panel):
         path = self._fx_preview_path(self._record_path)
         if path is None or self._on_export is None:
             return
-        self._on_export(path)
+        transitive = self.fx_preview_dependencies.IsShown() and self.fx_preview_dependencies.GetValue()
+        self._on_export(path, transitive)
 
     def _set_fx_tab_visible(self, visible: bool) -> None:
         index = self.notebook.FindPage(self.fx_preview_page)
