@@ -313,14 +313,16 @@ class MainFrame(wx.Frame):
         suffix = "_full" if transitive else ""
         self._save_fx_result(result, f"effect_{index}{suffix}.fx")
 
-    def _export_preview_fx(self, path: str) -> None:
+    def _export_preview_fx(self, path: str, transitive: bool = False) -> None:
         """Export whatever the FX Preview tab is currently showing -- routes
         to the effect-specific flow for an effect (matching the tab's own
-        non-transitive preview) or the generic descriptor flow otherwise."""
+        "Include dependencies" checkbox) or the generic descriptor flow
+        otherwise, since only an effect has effect-to-effect references to
+        follow transitively."""
 
         tokens = _paths.tokenize(path)
         if tokens and tokens[0] == "effect_descriptions":
-            self._export_effect_fx(path, transitive=False)
+            self._export_effect_fx(path, transitive=transitive)
         else:
             self._export_descriptor_fx(path)
 
