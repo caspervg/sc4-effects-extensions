@@ -34,8 +34,13 @@ Inside `effect`, recovered nested commands include:
 - `brushEffect`
 - `scrubberEffect`
 - `automataEffect`
+- `sequenceEffect`
 - `select`
 - `particleSequence`
+
+`sequence` (top level) and `sequenceEffect` (inside `effect`) are two
+different commands registered in two different tables: the first defines a
+sequence, the second references one by name.
 
 ## Scope restrictions
 

@@ -24,7 +24,7 @@ from .coverage import Coverage
 from .defaults import EFFECT_DEFAULT, UNINITIALIZED_U32
 from .inline_components import automata_effect_lines, brush_effect_lines, camera_effect_lines, scrubber_effect_lines, sound_effect_lines
 from .names import ResolvedNames
-from .writer import FxWriter, fmt_hex, fmt_num, fmt_vec3, quote_name
+from .writer import FxWriter, fmt_hex, fmt_num, fmt_vec3_sample, quote_name
 
 _TOP_LEVEL_FLAG_SWITCHES = [
     (0, "viewRelative"),
@@ -108,7 +108,10 @@ def _shared_child_options(
     t = d.legacy_transform
 
     if t.translation.x != 0.0 or t.translation.y != 0.0 or t.translation.z != 0.0:
-        opts.append(f"-offset {fmt_vec3(t.translation)}")
+        # One quoted argument: the shared child-option parser
+        # (`ParseDescRecOptions`, Mac `0x00401d2c`) runs ParseVector3 over a
+        # single switch argument.
+        opts.append(f"-offset {fmt_vec3_sample(t.translation)}")
     if t.scale != 1.0:
         opts.append(f"-scale {fmt_num(t.scale)}")
     if not _matrix_is_identity(t.matrix):
@@ -203,7 +206,7 @@ def _emit_description_record(
         writer.line(f"dynamicParticleEffect {quote_name(name)}" + "".join(f" {o}" for o in shared))
         coverage.emitted()
     elif component_type == 6:
-        writer.line(f"sequence {quote_name(name)}" + "".join(f" {o}" for o in shared))
+        writer.line(f"sequenceEffect {quote_name(name)}" + "".join(f" {o}" for o in shared))
         coverage.emitted()
     elif component_type == 3:
         record = resource.components.brushes.items[index]
@@ -279,7 +282,10 @@ def _emit_children(writer: FxWriter, coverage: Coverage, resource: EffDirResourc
         while j < n and bit(items[j].flags.value, 1) == is_system_sequence:
             j += 1
         if is_system_sequence:
-            writer.begin("systemSequence")
+            # cGroupSystemSequenceCommand is registered under the token
+            # "particleSequence" (`cGroupEffectCommand::RegisterCommands`,
+            # Mac `0x007824b8`); `systemSequence` is only the class name.
+            writer.begin("particleSequence")
         _emit_child_range(writer, coverage, resource, names, effect_index, items, i, j)
         if is_system_sequence:
             writer.end()

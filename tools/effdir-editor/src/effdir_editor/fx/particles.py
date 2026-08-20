@@ -14,13 +14,14 @@ throughout `docs/reference/binary/effdir.md` itself
 from __future__ import annotations
 
 import math
+from typing import List, Tuple
 
 from ..model.particle import ParticleDescriptor
 from ..wire import Bounds3, Vec2, Vec3
 from .bits import bit
 from .coverage import Coverage
 from .defaults import PARTICLE_DEFAULT
-from .writer import FxWriter, fmt_color_curve, fmt_float_curve, fmt_hex, fmt_num, fmt_vec2_pair, fmt_vec2_sample, fmt_vec3, fmt_vec3_sample, quote_name
+from .writer import FxWriter, fmt_asset_name, fmt_color_curve, fmt_float_curve, fmt_hex, fmt_num, fmt_vec2_pair, fmt_vec2_sample, fmt_vec3_sample, quote_name
 
 
 _PARTICLE_DRAW_TYPES = {
@@ -159,7 +160,19 @@ def _emit_emission(writer: FxWriter, coverage: Coverage, p: ParticleDescriptor, 
     # speed from being dropped (they are stored in the same descriptor).
     motion = []
     if p.emit_velocity_bounds != PARTICLE_DEFAULT.emit_velocity_bounds:
-        motion.append(f"-velocity {fmt_vec3(p.emit_velocity_bounds.minimum)} {fmt_vec3(p.emit_velocity_bounds.maximum)}")
+        # `-velocity` takes ONE argument -- a single quoted direction that
+        # `nSCRes::ParseVector3` reads out of that one string (emit parser,
+        # Mac `0x00786ac1`), which the parser stores as both ends of the
+        # bounds. Two bare vec3s were six separate tokens the parser would
+        # read as a malformed direction plus stray speed/vary arguments.
+        motion.append(f"-velocity {fmt_vec3_sample(p.emit_velocity_bounds.minimum)}")
+        if p.emit_velocity_bounds.minimum != p.emit_velocity_bounds.maximum:
+            coverage.note(
+                f"{path}.emit_velocity_bounds",
+                "unsupported",
+                "stored velocity bounds have different minimum and maximum, but `-velocity` writes one "
+                "direction to both ends; only the minimum was emitted",
+            )
     if p.emit_speed != PARTICLE_DEFAULT.emit_speed:
         motion.append(f"-speed {fmt_num(p.emit_speed.x)} {fmt_num(p.emit_speed.y)}")
     if bit(flags0, 5):
@@ -342,10 +355,10 @@ def _emit_force(writer: FxWriter, coverage: Coverage, p: ParticleDescriptor, fla
         parts.append(f"-explosionFront {fmt_num(p.explosion_front.value)} {fmt_num(p.explosion_front_secondary.value)}")
 
     if parts:
-        writer.begin("force")
+        writer.begin_command("force")
         for part in parts:
             writer.line(part)
-        writer.end()
+        writer.end_command()
         coverage.emitted()
     else:
         coverage.emitted()
@@ -393,10 +406,10 @@ def _emit_warp(writer: FxWriter, coverage: Coverage, p: ParticleDescriptor, flag
         parts.append("-wiggleVerts")
 
     if parts:
-        writer.begin("warp")
+        writer.begin_command("warp")
         for part in parts:
             writer.line(part)
-        writer.end()
+        writer.end_command()
         coverage.emitted()
     else:
         coverage.emitted()
@@ -406,7 +419,7 @@ def _emit_random_walk(writer: FxWriter, coverage: Coverage, p: ParticleDescripto
     if not bit(flags0, 23):
         coverage.emitted()
         return
-    writer.begin("randomWalk")
+    writer.begin_command("randomWalk")
     if p.random_walk_delay != PARTICLE_DEFAULT.random_walk_delay:
         writer.line(f"-delay {fmt_vec2_pair(p.random_walk_delay)}")
     if p.random_walk_strength != PARTICLE_DEFAULT.random_walk_strength:
@@ -418,8 +431,10 @@ def _emit_random_walk(writer: FxWriter, coverage: Coverage, p: ParticleDescripto
     if bit(flags0, 25):
         writer.line("-preferSea")
     if p.prefer_direction != PARTICLE_DEFAULT.prefer_direction:
-        writer.line(f"-preferDir {fmt_vec3(p.prefer_direction)}")
-    writer.end()
+        # One quoted argument: randomWalk's parser runs ParseVector3 over a
+        # single switch argument (Mac `0x0077fc62`).
+        writer.line(f"-preferDir {fmt_vec3_sample(p.prefer_direction)}")
+    writer.end_command()
     coverage.emitted()
 
 
@@ -427,7 +442,7 @@ def _emit_collision(writer: FxWriter, coverage: Coverage, p: ParticleDescriptor,
     if not bit(flags0, 8):
         coverage.emitted()
         return
-    writer.begin("collision")
+    writer.begin_command("collision")
     if p.bounce.value != 0.3:
         writer.line(f"-bounce {fmt_num(p.bounce.value)}")
     if bit(flags0, 9):
@@ -443,7 +458,7 @@ def _emit_collision(writer: FxWriter, coverage: Coverage, p: ParticleDescriptor,
         writer.line(f"-deathByWater {fmt_num(p.death_by_water.value)}")
     if bit(flags1, 0):
         writer.line("-destroyBuildings")
-    writer.end()
+    writer.end_command()
     coverage.emitted()
 
 
@@ -529,8 +544,8 @@ def _emit_texture_model_align(writer: FxWriter, coverage: Coverage, p: ParticleD
             shared_draw.insert(0, f"-draw {draw_name}")
 
     if is_model:
-        names = [fmt_hex(k) for k in p.model_keys.items] or [fmt_hex(p.resource_key.value)]
-        writer.begin("model " + " ".join(names))
+        names = [fmt_asset_name("modelID", k) for k in p.model_keys.items] or [fmt_asset_name("modelID", p.resource_key.value)]
+        writer.begin_command("model " + " ".join(names))
         for opt in shared_draw:
             writer.line(opt)
         if bit(flags2, 1):
@@ -549,10 +564,10 @@ def _emit_texture_model_align(writer: FxWriter, coverage: Coverage, p: ParticleD
             writer.line("-applyLighting")
         if bit(flags2, 10):
             writer.line("-noCullFaces")
-        writer.end()
+        writer.end_command()
         coverage.emitted()
     elif p.resource_key.value != 0:
-        line = f"texture {fmt_hex(p.resource_key.value)}"
+        line = f"texture {fmt_asset_name('textureID', p.resource_key.value)}"
         if bit(flags0, 29):
             line += " -hflip"
         if bit(flags0, 30):
@@ -600,3 +615,19 @@ def _emit_timed_effects(writer: FxWriter, coverage: Coverage, p: ParticleDescrip
         if name:
             writer.line(f"timedEffect {quote_name(name)} {fmt_num(te.time.value)}")
     coverage.emitted()
+
+
+def particle_asset_ids(p: ParticleDescriptor) -> List[Tuple[str, int]]:
+    """The `modelID`/`textureID` bindings `emit_particles` references by name.
+
+    Mirrors the model-vs-texture dispatch in `_emit_texture_model_align`:
+    third-bitset bit 0 selects `model` (one key per name, from the vector or
+    the single key), anything else with a key emits `texture`.
+    """
+
+    if bit(p.flags_2.value, 0):
+        keys = list(p.model_keys.items) or [p.resource_key.value]
+        return [("modelID", int(k)) for k in keys]
+    if p.resource_key.value != 0:
+        return [("textureID", int(p.resource_key.value))]
+    return []

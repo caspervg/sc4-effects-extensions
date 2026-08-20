@@ -5,7 +5,7 @@ import pytest
 from effdir_editor.fx import Coverage, emit_effect_closure, emit_resource
 from effdir_editor.fx.bits import bit
 from effdir_editor.fx.names import resolve_names
-from effdir_editor.fx.writer import FxWriter, fmt_hex, fmt_num, fmt_vec3, is_emittable_float, quote_name
+from effdir_editor.fx.writer import FxWriter, fmt_hex, fmt_num, fmt_vec3_sample, is_emittable_float, quote_name
 from effdir_editor.model.common import ReadProfile, StringU32Pair, StringU32U32Record, MessageTrigger
 from effdir_editor.model.components import default_attractor, default_brush, default_camera, default_scrubber, default_sequence, default_sound
 from effdir_editor.model.decal import default_decal
@@ -28,8 +28,10 @@ def test_fmt_num_strips_float32_noise_and_trailing_zeros():
     assert fmt_num(1.5) == "1.5"
 
 
-def test_fmt_vec3_and_hex():
-    assert fmt_vec3(Vec3(1.0, 2.0, 3.0)) == "1 2 3"
+def test_fmt_vec3_sample_and_hex():
+    # A vector is always one quoted argument -- ParseVector3 reads all three
+    # components out of a single argument string.
+    assert fmt_vec3_sample(Vec3(1.0, 2.0, 3.0)) == '"1 2 3"'
     assert fmt_hex(0x1A) == "0x0000001a"
 
 
@@ -39,19 +41,25 @@ def test_quote_name_only_quotes_when_needed():
     assert quote_name("") == '""'
 
 
-def test_writer_block_and_multiline_command_indentation():
+def test_writer_blocks_are_closed_but_commands_stay_on_one_line():
+    # Only the top-level definitions and effect children are `end`-closed
+    # blocks (docs/syntax/blocks-and-scopes.md); a command with switches is
+    # one line, so it can never close its enclosing block by accident.
     w = FxWriter()
     w.begin("particles foo")
     w.line("life 1 2")
+    w.begin_command("collision")
+    w.line("-bounce 0.5")
+    w.line("-sticky")
+    w.end_command()
     w.end()
-    w.multiline_command(["brushEffect -name x", "-rate 1"])
-    text = w.text()
-    assert text.splitlines() == [
+    w.command(["brushEffect -name x", "-rate 1"])
+    assert w.text().splitlines() == [
         "particles foo",
         "    life 1 2",
+        "    collision -bounce 0.5 -sticky",
         "end",
-        "brushEffect -name x",
-        "    -rate 1",
+        "brushEffect -name x -rate 1",
     ]
 
 
@@ -184,12 +192,14 @@ def test_particle_collision_effect_death_uses_exact_canonical_spelling_without_n
 def test_particle_texture_vs_model_dispatch():
     textured = dataclasses.replace(default_particle(), resource_key=make_raw_u32(0xAA))
     result = emit_resource(_resource_with_one_particle(textured))
-    assert "texture 0x000000aa" in result.text
+    assert "textureID tex_000000aa 0x000000aa" in result.text
+    assert "texture tex_000000aa" in result.text
 
     modeled = dataclasses.replace(default_particle(), flags_2=make_raw_bitset(1, 11), resource_key=make_raw_u32(0xBB))
     result2 = emit_resource(_resource_with_one_particle(modeled))
-    assert "model 0x000000bb" in result2.text
-    assert "texture 0x000000bb" not in result2.text
+    assert "modelID mdl_000000bb 0x000000bb" in result2.text
+    assert "model mdl_000000bb" in result2.text
+    assert "texture mdl_000000bb" not in result2.text
     assert not [n for n in result.coverage.notes if "original textureID" in n.message]
     assert not [n for n in result2.coverage.notes if "original modelID" in n.message]
 
@@ -464,7 +474,7 @@ def test_select_probability_and_system_sequence_are_reconstructed():
 
     result = emit_resource(r)
 
-    assert "systemSequence\n        select" in result.text
+    assert "particleSequence\n        select" in result.text
     assert "particleEffect p -prob 0.500008" in result.text
     assert not [n for n in result.coverage.notes if "probability" in n.path or "systemSequence" in n.message]
 
@@ -559,8 +569,10 @@ def test_sequence_definition_and_effect_child_use_distinct_keywords():
 
     text = emit_resource(r).text
 
-    assert "sequenceEffect seq" in text
+    # Definition is `sequence`, the effect child that references it is
+    # `sequenceEffect` -- they are registered in different command tables.
     assert "sequence seq" in text
+    assert "sequenceEffect seq" in text
 
 
 def test_camera_and_repeated_brush_inline_components_emit_full_fields():
@@ -656,7 +668,7 @@ def test_camera_params_recovers_single_zoom_shorthand_and_nondefault_side_swipe(
 
     text = emit_resource(r).text
 
-    assert "cameraParams 5000 -sideSwipe 10" in text
+    assert "camera 5000 -sideSwipe 10" in text
 
 
 def test_camera_params_wire_count_is_not_assumed_to_be_five():
@@ -851,7 +863,7 @@ def test_particle_draw_and_alignment_domains_are_emitted():
         flags_2=make_raw_bitset(1 << 7, 11),
     )
     result = emit_resource(_resource_with_one_particle(p))
-    assert "texture 0x000000aa -draw additive" in result.text
+    assert "texture tex_000000aa -draw additive" in result.text
     assert "align dirY -damp 0.25 -windBank 1 2" in result.text
 
 
@@ -875,10 +887,47 @@ def test_source_dice_and_model_speed_use_distinct_adjacent_fields():
 
 
 def test_decal_draw_domain_is_emitted():
+    # The draw enum is a switch on `texture`, not a command of its own: a
+    # bare `draw` line is rejected by the game with "unknown command draw".
+    # kDecalDrawTypes is its own five-entry table: 2 is `modulate` here,
+    # while the same value means `decalIgnoreDepth` for a particle.
     r = default_resource()
-    r.decals.items.append(dataclasses.replace(default_decal(), draw_mode=make_raw_u8(7)))
+    r.decals.items.append(dataclasses.replace(default_decal(), texture_key=make_raw_u32(0xAA), draw_mode=make_raw_u8(2)))
     result = emit_resource(r)
-    assert "draw modulate" in result.text
+    assert "texture tex_000000aa -draw modulate" in result.text
+    assert chr(10) + "    draw " not in result.text
+
+    # A particle-only draw value has no decal spelling and must be reported,
+    # not emitted as a name the decal enum parser will reject.
+    r2 = default_resource()
+    r2.decals.items.append(dataclasses.replace(default_decal(), texture_key=make_raw_u32(0xAA), draw_mode=make_raw_u8(7)))
+    result2 = emit_resource(r2)
+    assert "-draw" not in result2.text
+    assert any("draw_mode=7" in n.message for n in result2.coverage.notes)
+
+
+def test_texture_and_model_keys_are_declared_before_use():
+    # texture/model resolve a symbolic name through textureID/modelID; a raw
+    # key makes the game reject the file with "No such texture: '0x...'".
+    r = default_resource()
+    r.decals.items.append(dataclasses.replace(default_decal(), texture_key=make_raw_u32(0xAA)))
+    r.decals.items.append(dataclasses.replace(default_decal(), texture_key=make_raw_u32(0xAA)))
+    text = emit_resource(r).text
+    assert text.count("textureID tex_000000aa 0x000000aa") == 1
+    assert text.index("textureID tex_000000aa") < text.index("decal ")
+    assert "0x000000aa -light" not in text
+
+
+def test_dynamic_particle_models_are_declared_before_use():
+    from effdir_editor.model.dynamic_particle import default_dynamic_particle
+
+    r = default_resource()
+    r.dynamic_particles.items.append(
+        dataclasses.replace(default_dynamic_particle(), model_key=make_raw_u32(0xCC))
+    )
+    text = emit_resource(r).text
+    assert "modelID mdl_000000cc 0x000000cc" in text
+    assert "model mdl_000000cc" in text
 
 
 def test_tractor_wiggle_and_timed_effect_emit_without_crashing():
@@ -933,7 +982,7 @@ def test_component_with_no_options_keeps_its_transform():
     r.effect_name_map.items.append(StringU32Pair(name=WireString.from_text("E"), target=make_raw_u32(0)))
     result = emit_resource(r)
     assert "cameraEffect" in result.text
-    assert "-offset 5 6 7" in result.text
+    assert '-offset "5 6 7"' in result.text
     assert "-scale 2" in result.text
 
 
@@ -1086,7 +1135,7 @@ def test_emit_resource_is_syntactically_balanced():
     with a matching `end` where expected -- not a real fx parser, just a
     brace-style balance check on the two block-forming keywords the
     emitter uses (`particles`/`decal`/`shake`/`light`/`dynamicParticle`/
-    `sequenceEffect`/`effect`/`select` all close with a bare `end` line)."""
+    `sequence`/`effect`/`select` all close with a bare `end` line)."""
 
     r = default_resource()
     r.particles.items.append(default_particle())
@@ -1099,7 +1148,7 @@ def test_emit_resource_is_syntactically_balanced():
     r.effect_name_map.items.append(StringU32Pair(name=WireString.from_text("E"), target=make_raw_u32(0)))
 
     result = emit_resource(r)
-    opens = sum(1 for line in result.text.splitlines() if line.strip().split(" ")[0] in ("particles", "decal", "shake", "light", "dynamicParticle", "sequenceEffect", "effect", "select", "systemSequence"))
+    opens = sum(1 for line in result.text.splitlines() if line.strip().split(" ")[0] in ("particles", "decal", "shake", "light", "dynamicParticle", "sequence", "effect", "select", "particleSequence"))
     closes = sum(1 for line in result.text.splitlines() if line.strip() == "end")
     assert opens == closes
     assert opens > 0
@@ -1150,6 +1199,42 @@ def test_tokenizer_offsets_map_back_onto_the_source_text():
         assert text[token.start : token.start + len(token.text)] == token.text
 
 
+def test_comment_open_and_close_never_share_a_line():
+    """`#<` and `#>` on one line make the game swallow the rest of the file.
+
+    `cFileParser::DoParseFile` erases from `#<` to end of line *before*
+    searching for `#>`, so a single-line comment destroys its own
+    terminator and the parser stays in comment mode forever -- the file
+    loads as if it were empty, with no error reported.
+    """
+
+    r = default_resource()
+    r.decals.items.append(default_decal())
+    text = emit_resource(r).text
+
+    for line in text.splitlines():
+        assert not ("#<" in line and "#>" in line), line
+        if "#<" in line:
+            assert line.strip() == "#<", line
+    # And the comment still closes, so what follows is parsed.
+    assert "#>" in text
+    assert "decal " in _without_comments(text)
+
+
+def _without_comments(text: str) -> str:
+    """Drop `#<` ... `#>` blocks the way the game's line scanner does."""
+
+    kept, in_comment = [], False
+    for line in text.splitlines():
+        if line.strip() == "#<":
+            in_comment = True
+        elif line.strip() == "#>":
+            in_comment = False
+        elif not in_comment:
+            kept.append(line)
+    return "\n".join(kept)
+
+
 def test_every_block_keyword_the_emitter_produces_is_in_the_vocabulary():
     """Guards against the highlighter drifting from the emitter: any line
     that opens a block in real output must be a known block keyword."""
@@ -1167,7 +1252,7 @@ def test_every_block_keyword_the_emitter_produces_is_in_the_vocabulary():
     r.effect_name_map.items.append(StringU32Pair(name=WireString.from_text("E"), target=make_raw_u32(0)))
 
     text = emit_resource(r).text
-    lines = [ln.strip() for ln in text.splitlines() if ln.strip() and not ln.strip().startswith("#<")]
+    lines = [ln.strip() for ln in _without_comments(text).splitlines() if ln.strip()]
     # Every line that is closed by a bare `end` starts with a block keyword.
     openers = {ln.split(" ")[0] for ln in lines if ln != "end" and not ln.startswith("-")}
     block_openers = {w for w in openers if w in highlight.BLOCK_KEYWORDS}
@@ -1205,11 +1290,11 @@ def test_camera_params_non_expandable_zoom_vector_is_reported_not_misspelled():
         values=(100.0, 50.0, 77.0, 12.0, 3.0, 100.0, 1.0, 4.0, 7.0),
     )
     result = emit_resource(r)
-    # Previously emitted `cameraParams 100 50 77 12 3`, five positional
-    # zoom values, even though the command only accepts one (the parser
-    # expands it to five by halving) -- a value that would either fail to
-    # parse or silently re-expand into the wrong zoom levels on recompile.
-    assert "cameraParams" not in result.text
+    # Previously emitted `camera 100 50 77 12 3`, five positional zoom
+    # values, even though the command only accepts one (the parser expands
+    # it to five by halving) -- a value that would either fail to parse or
+    # silently re-expand into the wrong zoom levels on recompile.
+    assert "camera" not in result.text
     assert any("trailing_float_metadata" in n.path and "not the single-value" in n.message for n in result.coverage.notes)
 
 
@@ -1224,7 +1309,7 @@ def test_camera_params_single_value_expansion_still_works():
         values=(100.0, 50.0, 25.0, 12.5, 6.25, 100.0, 1.0, 4.0, 7.0),
     )
     result = emit_resource(r)
-    assert "cameraParams 100" in result.text
+    assert "camera 100" in result.text
 
 
 def test_matrix_rotation_round_trip_including_gimbal_lock():

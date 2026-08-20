@@ -4,10 +4,12 @@ Mapping from `docs/reference/top-level/dynamic-particle.md`."""
 
 from __future__ import annotations
 
+from typing import List, Tuple
+
 from ..model.dynamic_particle import DynamicParticleDescriptor
 from .coverage import Coverage
 from .defaults import DYNAMIC_PARTICLE_DEFAULT
-from .writer import FxWriter, fmt_hex, fmt_num, quote_name
+from .writer import FxWriter, fmt_asset_name, fmt_num, quote_name
 
 
 def emit_dynamic_particle(writer: FxWriter, coverage: Coverage, name: str, d: DynamicParticleDescriptor, *, path: str) -> None:
@@ -19,7 +21,7 @@ def emit_dynamic_particle(writer: FxWriter, coverage: Coverage, name: str, d: Dy
     coverage.emitted()
 
     if d.model_keys.items or d.model_key.value != 0:
-        names = [fmt_hex(k) for k in d.model_keys.items] or [fmt_hex(d.model_key.value)]
+        names = [fmt_asset_name("modelID", k) for k in d.model_keys.items] or [fmt_asset_name("modelID", d.model_key.value)]
         writer.line("model " + " ".join(names))
     coverage.emitted()
 
@@ -37,3 +39,12 @@ def emit_dynamic_particle(writer: FxWriter, coverage: Coverage, name: str, d: Dy
         coverage.note(f"{path}", "unsupported", f"value_14={d.value_14.value!r}/value_24={d.value_24.value!r} have no confirmed parser setter or runtime consumer")
 
     writer.end()
+
+
+def dynamic_particle_asset_ids(d: DynamicParticleDescriptor) -> List[Tuple[str, int]]:
+    """The `modelID` bindings `emit_dynamic_particle` references by name."""
+
+    if not (d.model_keys.items or d.model_key.value != 0):
+        return []
+    keys = list(d.model_keys.items) or [d.model_key.value]
+    return [("modelID", int(k)) for k in keys]

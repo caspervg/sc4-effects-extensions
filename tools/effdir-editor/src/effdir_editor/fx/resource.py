@@ -21,15 +21,15 @@ from typing import Dict, List, Optional, Set, Tuple
 
 from ..model.resource import EffDirResource
 from .coverage import Coverage, FxEmitResult, note_non_finite_floats
-from .decals import emit_decal
-from .dynamic_particles import emit_dynamic_particle
+from .decals import decal_asset_ids, emit_decal
+from .dynamic_particles import dynamic_particle_asset_ids, emit_dynamic_particle
 from .effects import emit_effect, emit_effect_alias
 from .lights import emit_light
 from .names import ResolvedNames, resolve_names
-from .particles import emit_particles
+from .particles import emit_particles, particle_asset_ids
 from .sequences import emit_sequence
 from .shakes import emit_shake
-from .writer import FxWriter, fmt_hex, fmt_num, quote_name
+from .writer import FxWriter, fmt_asset_name, fmt_hex, fmt_num, quote_name
 
 _HEADER = (
     "This file was decompiled from an EFFDIR resource. It is a lossy, "
@@ -67,6 +67,46 @@ def _emit_inline_resource_ids(
             writer.line(f"{keyword} {quote_name(names.name_for(component_type, index))} {fmt_hex(key)}")
             coverage.emitted()
     if emitted:
+        writer.blank()
+
+
+_ASSET_ID_SOURCES = {
+    "particles": ("particles", particle_asset_ids),
+    "decals": ("decals", decal_asset_ids),
+    "dynamic_particles": ("dynamic_particles", dynamic_particle_asset_ids),
+}
+
+
+def _emit_asset_ids(writer: FxWriter, resource: EffDirResource, pools: Set[Tuple[str, int]]) -> None:
+    """Declare the `textureID`/`modelID` names the emitted pools reference.
+
+    Same job as `_emit_inline_resource_ids` does for brush/sound: EFFDIR
+    stores a raw resource key, but `texture`/`model` only accept a symbolic
+    name resolved through those maps, so a decompiled file that printed the
+    key inline fails to load with `No such texture: '0x...'`. The alias is
+    derived from the key itself (`fmt_asset_name`), so equal keys share one
+    declaration and the output is stable across exports.
+
+    No coverage accounting here: the texture/model fields these bindings
+    exist for are already counted by their own emitters.
+    """
+
+    keys = []
+    for collection_path, index in sorted(pools):
+        source = _ASSET_ID_SOURCES.get(collection_path)
+        if source is None:
+            continue
+        attribute, asset_ids = source
+        items = getattr(resource, attribute).items
+        if not 0 <= index < len(items):
+            continue
+        for binding in asset_ids(items[index]):
+            if binding not in keys:
+                keys.append(binding)
+
+    for keyword, key in keys:
+        writer.line(f"{keyword} {fmt_asset_name(keyword, key)} {fmt_hex(key)}")
+    if keys:
         writer.blank()
 
 
@@ -112,7 +152,9 @@ def _emit_camera_params(writer: FxWriter, coverage: Coverage, resource: EffDirRe
         )
         return
 
-    parts = ["cameraParams", *(fmt_num(value) for value in source_zooms)]
+    # The command token is `camera`, not the class name: RegisterCommands
+    # (Mac `0x00402931`) registers cCameraParamsCommand under "camera".
+    parts = ["camera", *(fmt_num(value) for value in source_zooms)]
     if parallax_base != 100.0 or parallax_range != 1.0:
         if parallax_range < 0.0:
             coverage.skipped(f"{path}.parallax_range", "cameraParams clamps a negative parallax range to zero")
@@ -257,6 +299,7 @@ def emit_descriptor(resource: EffDirResource, path: str) -> Optional[FxEmitResul
     coverage = Coverage()
     writer = FxWriter()
     names = resolve_names(resource, coverage)
+    _emit_asset_ids(writer, resource, {(collection, index)})
 
     if collection == "particles" and 0 <= index < len(resource.particles.items):
         item = resource.particles.items[index]
@@ -304,6 +347,7 @@ def emit_resource(resource: EffDirResource) -> FxEmitResult:
     names = resolve_names(resource, coverage)
     effect_indices = list(range(len(resource.effect_descriptions.items)))
     _emit_inline_resource_ids(writer, coverage, resource, names, effect_indices)
+    _emit_asset_ids(writer, resource, _all_pools(resource))
     _emit_camera_params(writer, coverage, resource)
     _emit_pools(writer, coverage, resource, names)
     _emit_effects(writer, coverage, resource, names)
@@ -319,6 +363,16 @@ _INLINE_COLLECTIONS = (
     "components.sounds",
     "components.cameras",
 )
+
+
+def _all_pools(resource: EffDirResource) -> Set[Tuple[str, int]]:
+    """Every pool `_emit_pools` will emit, as (collection_path, index)."""
+
+    return {
+        (collection_path, index)
+        for collection_path, (attribute, _) in _ASSET_ID_SOURCES.items()
+        for index in range(len(getattr(resource, attribute).items))
+    }
 
 
 def _referenced_pools(resource: EffDirResource, effect_index: int) -> Set[Tuple[str, int]]:
@@ -516,6 +570,7 @@ def emit_effect_closure(
         effect_indices, wanted = [effect_index], _referenced_pools(resource, effect_index)
 
     _emit_inline_resource_ids(writer, coverage, resource, names, effect_indices)
+    _emit_asset_ids(writer, resource, wanted)
     _emit_camera_params(writer, coverage, resource)
 
     # Two events may target the same shake or light (a flash and a tint

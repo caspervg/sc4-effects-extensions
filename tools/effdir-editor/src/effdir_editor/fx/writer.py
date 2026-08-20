@@ -8,13 +8,18 @@ per-record emitters (particles.py, effects.py, ...) means every emitted
 number goes through one place, so formatting stays consistent and is
 easy to fix in one spot.
 
-Quoting policy (see docs/reference/particles/appearance.md,
-docs/reference/top-level/light.md, docs/reference/particles/force.md):
-fixed-arity vec3 options (`-offset`, `emit -dir`, `randomWalk -preferDir`,
-...) are written as three bare tokens; a vec3 that is one *sample* inside
-a variable-length curve (`color`, `force -tractor`) is quoted as a single
-string so the parser does not read its three components as three
-separate curve samples.
+Quoting policy: **every vector is one quoted argument**. The parser splits
+a line into arguments first and then hands one argument string to
+`nSCRes::ParseVector2`/`ParseVector3`, which reads all of its components
+out of that single string -- confirmed in the decal texture
+(`0x00785890`), force (`0x0078710c`), emit (`0x0078667c`), randomWalk
+(`0x0077fc62`), and shared child-option (`0x00401d2c`) parsers. Three bare
+tokens are three arguments, not one vector.
+
+`fmt_vec2_pair` is the exception and is not a vector: it prints two
+genuinely separate float arguments (`life <a> <b>`, `randomWalk -delay
+<base> <vary>`, ...), each of which the parser reads with its own
+`ParseFloat`.
 """
 
 from __future__ import annotations
@@ -78,14 +83,25 @@ def fmt_hex(value: int) -> str:
     return f"0x{int(value) & 0xFFFFFFFF:08x}"
 
 
-def fmt_vec3(v: Vec3) -> str:
-    """Three bare tokens: `x y z`. For fixed-arity vec3 options only."""
+def fmt_asset_name(keyword: str, key: int) -> str:
+    """Symbolic name for a texture/model resource key.
 
-    return f"{fmt_num(v.x)} {fmt_num(v.y)} {fmt_num(v.z)}"
+    `texture` and `model` do not accept a numeric key: they resolve a
+    symbolic name through the parser's `textureID`/`modelID` map and throw
+    `No such texture/model: '%s'` for anything not in it
+    (docs/reference/particles/rendering.md,
+    docs/reference/top-level/dynamic-particle.md). EFFDIR stores only the
+    key, so the decompiler synthesizes one deterministic alias per key and
+    declares it up front -- the same treatment brush/sound keys already get
+    through `brushID`/`soundID`.
+    """
+
+    prefix = {"textureID": "tex", "modelID": "mdl"}[keyword]
+    return f"{prefix}_{int(key) & 0xFFFFFFFF:08x}"
 
 
 def fmt_vec2_pair(v: Vec2) -> str:
-    """Two bare tokens: `x y`. For fixed-arity min/max ranges."""
+    """Two bare tokens: `x y`. Two separate float arguments, not a vector."""
 
     return f"{fmt_num(v.x)} {fmt_num(v.y)}"
 
@@ -136,11 +152,15 @@ class FxWriter:
         self._lines: List[str] = []
         self._indent = 0
         self._unit = indent_unit
+        self._pending: List[str] | None = None
 
     def blank(self) -> None:
         self._lines.append("")
 
     def line(self, text: str) -> None:
+        if self._pending is not None:
+            self._pending.append(text)
+            return
         if text == "":
             self.blank()
             return
@@ -151,15 +171,21 @@ class FxWriter:
             self.line(text)
 
     def comment(self, text: str) -> None:
-        """`docs/syntax/comments.md`: the only confirmed comment form is
-        the block form `#< ... #>`. Long text (the export disclaimer) is
-        wrapped across several short `#< ... #>` lines instead of one very
-        long one -- every other emitted line is short, so a single long
-        comment line forces a wide horizontal scrollbar the rest of the
-        text never needs."""
+        """Emit a comment as `#<`, body lines, `#>` -- each on its own line.
 
+        `#<` and `#>` must never share a line. `nSCRes::cFileParser::
+        DoParseFile` (Mac `0x0041db38`) scans each line for `#<` and, on a
+        hit, erases from there to end of line *before* looking for `#>`. A
+        one-line `#< text #>` therefore destroys its own terminator, the
+        parser latches into comment mode, and every remaining line of the
+        file is swallowed -- the file silently never loads. Only a `#>` on a
+        line that has no earlier `#<` closes the comment.
+        """
+
+        self.line("#<")
         for chunk in textwrap.wrap(text, width=_COMMENT_WRAP_WIDTH) or [text]:
-            self.line(f"#< {chunk} #>")
+            self.line(chunk)
+        self.line("#>")
 
     def begin(self, header: str) -> None:
         self.line(header)
@@ -169,19 +195,36 @@ class FxWriter:
         self._indent = max(0, self._indent - 1)
         self.line("end")
 
-    def multiline_command(self, parts: Sequence[str]) -> None:
-        """Print a single logical command whose switches are pretty-printed
-        across several indented lines (no `end`: this is one command, not a
-        block -- see `docs/reference/effect-children/brush-effect.md`'s
-        syntax block, which has no closing `end`)."""
+    def command(self, parts: Sequence[str]) -> None:
+        """Print one logical command: header plus switches, on one line.
+
+        A command is not a block. Only the seven top-level definitions and
+        the nested effect children are opened by a command and closed with
+        `end` (docs/syntax/blocks-and-scopes.md); `force`, `warp`,
+        `randomWalk`, `collision`, `model`, `brushEffect` and friends take
+        switches instead, and their doc syntax blocks have no closing `end`.
+        Spreading those switches over indented continuation lines is not a
+        documented form either, so everything goes on the command's own line,
+        which is the one spelling every syntax page shows.
+        """
 
         if not parts:
             return
-        self.line(parts[0])
-        self._indent += 1
-        for part in parts[1:]:
-            self.line(part)
-        self._indent -= 1
+        self.line(" ".join(parts))
+
+    # Older name, kept because several emitters still call it.
+    multiline_command = command
+
+    def begin_command(self, header: str) -> None:
+        """Open a command whose switches are appended through `line()`, for
+        emitters that build them across conditionals. `end_command` flushes
+        the whole thing as the single line `command` would have written."""
+
+        self._pending = [header]
+
+    def end_command(self) -> None:
+        parts, self._pending = self._pending or [], None
+        self.line(" ".join(parts))
 
     def text(self) -> str:
         return "\n".join(self._lines).rstrip("\n") + "\n"

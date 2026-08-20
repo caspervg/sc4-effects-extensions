@@ -324,7 +324,6 @@ void EffectsPanel::RenderManualSpawn_()
 
     const std::string lastStatus = director_.GetLastSpawnStatus();
     if (!lastStatus.empty()) {
-        ImGui::SameLine();
         ImGui::TextWrapped("%s", lastStatus.c_str());
     }
 }

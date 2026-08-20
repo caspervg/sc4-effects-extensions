@@ -5,11 +5,13 @@
 Status: `Confirmed`
 
 ```fx
-camera <f0> [f1 f2 f3 f4]
-    -parallax <near> <far>
-    -size <float>
-    -sideSwipe <float>
+camera <f0> [f1 f2 f3 f4] -parallax <near> <far> -size <float> -sideSwipe <float>
 ```
+
+The command token is `camera`; the class behind it is `cCameraParamsCommand`
+(`cSC4EffectsParser::RegisterCommands`, Mac `0x00402931`), but
+`cameraParams` is not a command and is rejected with
+`Unknown command 'cameraParams'`.
 
 This is distinct from nested `cameraEffect`.
 

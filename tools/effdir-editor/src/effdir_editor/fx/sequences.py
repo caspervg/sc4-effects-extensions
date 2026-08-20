@@ -1,5 +1,12 @@
 """EFFDIR `SequenceDescription` (Section 8, component_type 6) -> fx
-top-level `sequenceEffect NAME ... end`.
+top-level `sequence NAME ... end`.
+
+The top-level pool is `sequence`; `sequenceEffect` is the *child* command
+that references it from inside an `effect`. Both exist, and they are
+registered in different tables: `cSC4EffectsParser::RegisterCommands`
+(Mac `0x00402931`) binds cSequenceEffectCommand to "sequence", while
+`cGroupEffectCommand::RegisterCommands` (`0x007824b8`) binds
+cGroupSequenceCommand to "sequenceEffect".
 
 Mapping from `docs/reference/top-level/sequence.md`. A `SequenceItem`
 with an empty `effect_name` is a `wait`; a non-empty one is a `play`
@@ -24,7 +31,7 @@ def emit_sequence(writer: FxWriter, coverage: Coverage, name: str, s: SequenceDe
         switches.append("-noOverlap")
     if bit(flags, 2):
         switches.append("-hardStart")
-    header = f"sequenceEffect {quote_name(name)}" + ("".join(f" {s}" for s in switches))
+    header = f"sequence {quote_name(name)}" + ("".join(f" {s}" for s in switches))
     writer.begin(header)
 
     for item in s.items.items:

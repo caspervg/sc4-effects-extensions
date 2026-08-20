@@ -133,7 +133,20 @@ zeroes the bounds and writes its scalar to descriptor `+0x1d0`. The adjacent
 
 ## Draw and alignment enum domains
 
-The shared draw parser (`0x004018F0`, table `0x00ABAFE0`) defines:
+There are two draw tables, and they are not interchangeable.
+
+Decals use `kDecalDrawTypes` (`0x00ABAF60`):
+
+| Value | Name |
+| ---: | --- |
+| 0 | `decal` |
+| 1 | `additive` |
+| 2 | `modulate` |
+| 3 | `decalInvertDepth` |
+| 4 | `decalNoOverlap` |
+
+Particles use the shared draw parser (`0x004018F0`) over `kParticleDrawTypes`
+(`0x00ABAFE0`):
 
 | Value | Name |
 | ---: | --- |
@@ -145,6 +158,12 @@ The shared draw parser (`0x004018F0`, table `0x00ABAFE0`) defines:
 | 5 | `additive` |
 | 6 | `additiveIgnoreDepth` |
 | 7 | `modulate` |
+
+Either enum is always a `-draw` switch on the `texture`/`model` command that
+carries it, for decals as much as for particles: `cDecalTextureCommand::Parse`
+(`0x00785890`) reads both, and the game rejects a bare `draw <mode>` line with
+`unknown command draw`. Feeding a particle name to a decal (or the reverse)
+throws `Unknown enum '%s'`.
 
 The alignment parser (`0x0078AA74`, table `0x00ABAFA0`) defines:
 
@@ -220,6 +239,14 @@ recovered audio/brush asset name. This is canonicalization, not lost behavior.
 
 The lookup yields only a resource key, not a previously built component.
 Consequently every `brushEffect` invocation repeats its stored brush options.
+
+Particle, decal, and dynamic-particle render assets work the same way, and
+need the same treatment: `texture` and `model` resolve a symbolic name through
+the `textureID`/`modelID` maps and throw `No such texture: '%s'` /
+`No such model: '%s'` for anything else, so a raw `texture 0x0aa55ea7` will not
+load. Nothing here is derived from usage, since the key is all the record
+holds: each distinct key gets one deterministic alias (`tex_0aa55ea7`,
+`mdl_0aa55ea7`) declared once, ahead of the pools that reference it.
 
 Automata names differ: `AttractorDescription` stores its own string and the
 `-name` versus `-group` selector. `DescriptionRecord.name` is normally empty
