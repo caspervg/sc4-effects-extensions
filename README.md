@@ -64,6 +64,9 @@ The editor supports:
 - DBPF writes with QFS compression preserved by default, or explicitly enabled or disabled;
 - selection of multiple EFFDIR resources in one DBPF package; and
 - raw-preserved, read-only fallback for unsupported versions and malformed resources.
+- a Windows live-game pane that displays SC4 through DWM and remotely reloads `.fx` files, starts or
+  stops previews, and edits their transforms when the game is launched with
+  `-NetCommandGenerator:enabled`;
 
 Current limitations:
 

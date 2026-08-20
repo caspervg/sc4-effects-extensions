@@ -46,9 +46,9 @@ class ResourceTree(wx.Panel):
         self.search_status.SetFont(self.search_status.GetFont().Smaller())
 
         self.tree = dv.TreeListCtrl(self, style=dv.TL_SINGLE)
-        self.tree.AppendColumn("Node", width=self.FromDIP(440))
-        self.tree.AppendColumn("Type", width=160)
-        self.tree.AppendColumn("Refs", width=50)
+        self.tree.AppendColumn("Node", width=self.FromDIP(190))
+        self.tree.AppendColumn("Type", width=self.FromDIP(90))
+        self.tree.AppendColumn("Refs", width=self.FromDIP(40))
 
         sizer = wx.BoxSizer(wx.VERTICAL)
         sizer.Add(self.search, 0, wx.EXPAND | wx.ALL, 4)

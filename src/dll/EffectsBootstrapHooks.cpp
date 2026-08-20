@@ -162,6 +162,16 @@ bool HasFxExtension(const std::filesystem::path& path)
            std::tolower(static_cast<unsigned char>(extension[1])) == 'f' &&
            std::tolower(static_cast<unsigned char>(extension[2])) == 'x';
 }
+
+bool IsParserSuccessMessage(const std::string_view message)
+{
+    constexpr std::string_view success = "successfully";
+    return std::search(
+               message.begin(), message.end(), success.begin(), success.end(),
+               [](const char left, const char right) {
+                   return std::tolower(static_cast<unsigned char>(left)) == right;
+               }) != message.end();
+}
 }
 
 class EffectsBootstrapHooks::Impl
@@ -236,6 +246,45 @@ public:
         if (g_activeImpl == this) {
             g_activeImpl = nullptr;
         }
+    }
+
+    bool LoadFxFile(void* effectsManager, const std::filesystem::path& path, std::string& error) noexcept
+    {
+        error.clear();
+        if (!installed || !effectsManager || !originalEffectsParseQueuedFiles) {
+            error = "Effects parser reload is unavailable.";
+            return false;
+        }
+
+        void* const fileParser = *reinterpret_cast<void**>(
+            reinterpret_cast<uint8_t*>(effectsManager) + kEffectsBootstrapParserInterfaceOffset);
+        if (!fileParser) {
+            error = "Effects parser interface is unavailable.";
+            return false;
+        }
+
+        auto* const vtable = *reinterpret_cast<void***>(fileParser);
+        if (!vtable || !vtable[0x18 / sizeof(void*)]) {
+            error = "Effects parser AddInputFilePath method is unavailable.";
+            return false;
+        }
+
+        const std::string pathString = path.string();
+        const auto addInputFilePath = reinterpret_cast<FileParserAddInputFilePathFn>(vtable[0x18 / sizeof(void*)]);
+        addInputFilePath(fileParser, pathString.c_str(), 3);
+        originalEffectsParseQueuedFiles(static_cast<int>(reinterpret_cast<uintptr_t>(effectsManager)), nullptr);
+
+        if (vtable[0x28 / sizeof(void*)]) {
+            const auto getLastErrorString = reinterpret_cast<FileParserGetLastErrorStringFn>(vtable[0x28 / sizeof(void*)]);
+            if (const char* const parserError = getLastErrorString(fileParser);
+                parserError && *parserError && !IsParserSuccessMessage(parserError)) {
+                error = parserError;
+                return false;
+            }
+        }
+
+        LOG_INFO("Reloaded fx file: {}", pathString);
+        return true;
     }
 
     void EmitInfo(std::string_view line) const
@@ -474,6 +523,14 @@ void EffectsBootstrapHooks::ConfigureRecursiveLoading(const bool enabled, std::f
 bool EffectsBootstrapHooks::Install(const uint16_t gameVersion) noexcept
 {
     return impl_->Install(gameVersion);
+}
+
+bool EffectsBootstrapHooks::LoadFxFile(
+    void* effectsManager,
+    const std::filesystem::path& path,
+    std::string& error) noexcept
+{
+    return impl_->LoadFxFile(effectsManager, path, error);
 }
 
 void EffectsBootstrapHooks::Uninstall() noexcept

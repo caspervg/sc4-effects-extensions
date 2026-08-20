@@ -26,6 +26,7 @@
 #include "cISC4VisualEffect.h"
 #include "EffectsBootstrapHooks.hpp"
 #include "EffectsCatalogProbe.hpp"
+#include "EffectsGameCommands.hpp"
 #include "cRZBaseString.h"
 #include "panels/EffectsPanel.hpp"
 #include "public/ImGuiPanelAdapter.h"
@@ -366,6 +367,11 @@ bool SC4EffectsExtensionsDirector::PostAppInit() {
     LOG_INFO("Plugin .fx recursive loading: enabled={} root='{}'", settings.GetLoadPluginFxRecursively(), pluginFxRoot_.string());
     LOG_INFO("Packed effects output path: '{}'", packedEffectsOutputPath_.string());
 
+    gameCommands_ = std::make_unique<EffectsGameCommands>(*this);
+    if (!gameCommands_->Install()) {
+        LOG_WARN("failed to register effects game commands");
+    }
+
     if (!packedEffectsOutputPath_.empty()) {
         if (EnsurePackedEffectsSaveSegment_()) {
             LOG_INFO("packed effects DB segment registered");
@@ -390,6 +396,7 @@ bool SC4EffectsExtensionsDirector::PreAppShutdown() { return true; }
 
 bool SC4EffectsExtensionsDirector::PostAppShutdown() {
     PreCityShutdown_();
+    gameCommands_.reset();
     ReleasePackedEffectsSaveSegment_();
     if (messageServer2_) {
         messageServer2_->RemoveNotification(this, kSC4MessagePostCityInit);
@@ -422,6 +429,9 @@ bool SC4EffectsExtensionsDirector::AbortiveQuit() { return true; }
 bool SC4EffectsExtensionsDirector::OnInstall() { return true; }
 
 bool SC4EffectsExtensionsDirector::DoMessage(cIGZMessage2* pMsg) {
+    if (gameCommands_ && gameCommands_->HandleMessage(pMsg)) {
+        return true;
+    }
     const auto* pStandardMsg = static_cast<cIGZMessage2Standard*>(pMsg);
     switch (pStandardMsg->GetType()) {
     case kSC4MessagePostCityInit:
@@ -719,6 +729,46 @@ bool SC4EffectsExtensionsDirector::WritePluginFxFile(const std::filesystem::path
 
 bool SC4EffectsExtensionsDirector::RefreshKnownEffects() {
     return RefreshKnownEffects_();
+}
+
+bool SC4EffectsExtensionsDirector::LoadFxFile(const std::filesystem::path& path, std::string& status) {
+    status.clear();
+    if (!effectsManager_ || !hooks_) {
+        status = "No city/effects manager is active.";
+        return false;
+    }
+
+    std::error_code ec;
+    const auto canonicalPath = std::filesystem::weakly_canonical(path, ec);
+    if (ec || !std::filesystem::is_regular_file(canonicalPath, ec) || ec) {
+        status = "The fx path does not name an existing regular file.";
+        return false;
+    }
+    if (!HasFxExtension(canonicalPath)) {
+        status = "The selected file must have an .fx extension.";
+        return false;
+    }
+
+    const TrackedEffectState previous = GetTrackedEffectState();
+    if (previous.active) {
+        StopTrackedEffect();
+    }
+
+    std::string parserError;
+    if (!hooks_->LoadFxFile(effectsManager_, canonicalPath, parserError)) {
+        status = parserError.empty() ? "The effects parser rejected the file." : parserError;
+        LOG_ERROR("fx reload failed for '{}': {}", canonicalPath.string(), status);
+        return false;
+    }
+
+    RefreshKnownEffects_();
+    if (previous.active && effectsManager_->HasVisualEffect(previous.name.c_str())) {
+        SpawnTrackedEffectByName(previous.name.c_str(), previous);
+    }
+
+    status = "Loaded " + canonicalPath.string();
+    PushEventLine_(status, EventSeverity::Success);
+    return true;
 }
 
 bool SC4EffectsExtensionsDirector::DumpManagerMemory() {

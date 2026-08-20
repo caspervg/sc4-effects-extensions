@@ -13,7 +13,8 @@ import wx.aui
 import wx.dataview as dv
 
 from .. import fx as _fx
-from ..container.adapter import DEFAULT_EFFDIR_TGI, DbpfEffDirSource, LocalFileEffDirSource, ResourceHandle, WriteOptions
+from ..container.adapter import DEFAULT_EFFDIR_TGI, DbpfEffDirSource, LocalFileEffDirSource, ResourceHandle, \
+    WriteOptions
 from ..editor import api
 from ..editor import nodes as _nodes
 from ..editor import paths as _paths
@@ -23,6 +24,7 @@ from ..version import app_title
 from .diagnostics_panel import DiagnosticsPanel
 from .effdir_picker import EffDirPickerDialog
 from .fx_preview import FxPreviewDialog
+from .game_preview import GamePreviewPanel
 from .hex_view import HexView
 from .record_editor import RecordEditor
 from .resource_tree import ResourceTree
@@ -55,8 +57,13 @@ class MainFrame(wx.Frame):
         self._mgr = wx.aui.AuiManager(self)
 
         self.tree = ResourceTree(self, on_select=self._on_tree_select)
+        self.game_preview = GamePreviewPanel(self)
         self.record_editor = RecordEditor(
-            self, on_change=self._on_field_changed, on_navigate=self._select_path, on_export=self._export_preview_fx
+            self,
+            on_change=self._on_field_changed,
+            on_navigate=self._select_path,
+            on_export=self._export_preview_fx,
+            on_game_load=self.game_preview.load_fx_text,
         )
         self.diagnostics = DiagnosticsPanel(self, on_activate_path=self._select_path)
         self.hex_view = HexView(self)
@@ -66,11 +73,8 @@ class MainFrame(wx.Frame):
             wx.aui.AuiPaneInfo()
             .Left()
             .Caption("Resource")
-            # AUI treats BestSize as a hint and otherwise tends to restore
-            # the narrow default dock width. Keep the resource tree wide
-            # enough for long effect names in the actual layout as well.
-            .MinSize(self.FromDIP((560, -1)))
-            .BestSize(self.FromDIP((680, -1)))
+            .MinSize(self.FromDIP((280, -1)))
+            .BestSize(self.FromDIP((340, -1)))
             .CloseButton(False),
         )
         self._mgr.AddPane(
@@ -98,6 +102,16 @@ class MainFrame(wx.Frame):
         self._mgr.AddPane(
             self.record_editor,
             wx.aui.AuiPaneInfo().CenterPane().Caption("Fields"),
+        )
+        self._mgr.AddPane(
+            self.game_preview,
+            wx.aui.AuiPaneInfo()
+            .Right()
+            .Caption("Live Game")
+            .MinSize(self.FromDIP((420, -1)))
+            .BestSize(self.FromDIP((520, -1)))
+            .Floatable(False)
+            .CloseButton(False),
         )
 
         self._build_menu()
@@ -144,6 +158,11 @@ class MainFrame(wx.Frame):
             wx.ID_ANY, "&Hex View", "Show the raw hex dump of the resource being edited"
         )
         self.Bind(wx.EVT_MENU, self._on_toggle_hex_view, self._hex_view_item)
+        self._game_view_item = view_menu.AppendCheckItem(
+            wx.ID_ANY, "&Live Game", "Show the live SimCity 4 preview and controls"
+        )
+        self._game_view_item.Check(True)
+        self.Bind(wx.EVT_MENU, self._on_toggle_game_view, self._game_view_item)
         menu_bar.Append(view_menu, "&View")
 
         self.SetMenuBar(menu_bar)
@@ -165,6 +184,11 @@ class MainFrame(wx.Frame):
         pane = self._mgr.GetPane(self.hex_view)
         pane.Show(self._hex_view_item.IsChecked())
         self._mgr.Update()
+
+    def _on_toggle_game_view(self, _evt) -> None:
+        self._mgr.GetPane(self.game_preview).Show(self._game_view_item.IsChecked())
+        self._mgr.Update()
+        self.game_preview.viewport.refresh()
 
     def _append(self, menu: wx.Menu, item_id, label: str, handler) -> None:
         item = menu.Append(item_id, label)
@@ -192,10 +216,10 @@ class MainFrame(wx.Frame):
 
     def _on_open(self, _evt) -> None:
         with wx.FileDialog(
-            self,
-            "Open EFFDIR resource",
-            wildcard="SC4 package (*.dat)|*.dat|Raw EFFDIR (*.effdir;*.bin)|*.effdir;*.bin|All files (*.*)|*.*",
-            style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST,
+                self,
+                "Open EFFDIR resource",
+                wildcard="SC4 package (*.dat)|*.dat|Raw EFFDIR (*.effdir;*.bin)|*.effdir;*.bin|All files (*.*)|*.*",
+                style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST,
         ) as dlg:
             if dlg.ShowModal() != wx.ID_OK:
                 return
@@ -254,10 +278,10 @@ class MainFrame(wx.Frame):
         if self.session is None:
             return
         with wx.FileDialog(
-            self,
-            "Export EFFDIR resource",
-            wildcard="Raw EFFDIR (*.effdir)|*.effdir|Single-resource DBPF (*.dat)|*.dat|All files (*.*)|*.*",
-            style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT,
+                self,
+                "Export EFFDIR resource",
+                wildcard="Raw EFFDIR (*.effdir)|*.effdir|Single-resource DBPF (*.dat)|*.dat|All files (*.*)|*.*",
+                style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT,
         ) as dlg:
             if dlg.ShowModal() != wx.ID_OK:
                 return
@@ -344,11 +368,11 @@ class MainFrame(wx.Frame):
             if dlg.ShowModal() != wx.ID_SAVE:
                 return
         with wx.FileDialog(
-            self,
-            "Export as .fx",
-            defaultFile=default_file,
-            wildcard="fx source (*.fx)|*.fx|All files (*.*)|*.*",
-            style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT,
+                self,
+                "Export as .fx",
+                defaultFile=default_file,
+                wildcard="fx source (*.fx)|*.fx|All files (*.*)|*.*",
+                style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT,
         ) as dlg:
             if dlg.ShowModal() != wx.ID_OK:
                 return
@@ -409,6 +433,13 @@ class MainFrame(wx.Frame):
             self.record_editor.show_record(self.session, _paths.parent_path(path))
         self._highlight_path(path)
         self.status.SetStatusText(path, 1)
+        tokens = _paths.tokenize(path)
+        if tokens and tokens[0] == "effect_descriptions" and len(tokens) > 1 and isinstance(tokens[1], int):
+            index = tokens[1]
+            for entry in self.session.working.effect_name_map.items:
+                if entry.target.value == index:
+                    self.game_preview.set_effect_name(entry.name.decoded)
+                    break
 
     def _select_path(self, path: str) -> None:
         self._on_tree_select(path)
@@ -474,7 +505,8 @@ class MainFrame(wx.Frame):
         attr_name = _paths.tokenize(path)[-1] if kind == "collection" else None
         if kind == "collection" and isinstance(attr_name, str) and attr_name in COLLECTION_ITEM_TYPE_BY_ATTR:
             add_item = menu.Append(ID_ADD_RECORD, f"Add {COLLECTION_ITEM_TYPE_BY_ATTR[attr_name]}")
-            self.Bind(wx.EVT_MENU, lambda e, p=path, t=COLLECTION_ITEM_TYPE_BY_ATTR[attr_name]: self._add_record(p, t), add_item)
+            self.Bind(wx.EVT_MENU, lambda e, p=path, t=COLLECTION_ITEM_TYPE_BY_ATTR[attr_name]: self._add_record(p, t),
+                      add_item)
         if path == "effect_descriptions":
             add_effect_item = menu.Append(wx.ID_ANY, "Add Effect Description...")
             self.Bind(wx.EVT_MENU, lambda e: self._add_effect(), add_effect_item)

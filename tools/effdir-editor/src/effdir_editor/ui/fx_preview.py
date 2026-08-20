@@ -35,11 +35,12 @@ _STYLE_BY_KIND = {
 
 
 class FxPreview(stc.StyledTextCtrl):
-    """Read-only, syntax-highlighted view of emitted fx text."""
+    """Syntax-highlighted view of emitted fx text."""
 
-    def __init__(self, parent: wx.Window):
+    def __init__(self, parent: wx.Window, *, read_only: bool = True):
         super().__init__(parent, style=wx.BORDER_NONE)
-        self.SetReadOnly(True)
+        self._read_only = read_only
+        self.SetReadOnly(read_only)
         self.SetLexer(stc.STC_LEX_CONTAINER)
         self.SetMarginType(0, stc.STC_MARGIN_NUMBER)
         self.SetMarginWidth(0, self.FromDIP(44))
@@ -92,7 +93,9 @@ class FxPreview(stc.StyledTextCtrl):
     def set_text(self, text: str) -> None:
         self.SetReadOnly(False)
         self.SetValue(text)
-        self.SetReadOnly(True)
+        self.EmptyUndoBuffer()
+        self.SetSavePoint()
+        self.SetReadOnly(self._read_only)
         self.Colourise(0, -1)
 
     def _on_style_needed(self, evt: stc.StyledTextEvent) -> None:

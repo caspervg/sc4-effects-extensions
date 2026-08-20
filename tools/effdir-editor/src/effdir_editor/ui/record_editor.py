@@ -130,6 +130,7 @@ _PG_READ_ONLY = getattr(
     getattr(wxpg, "ReadOnly", 1 << 15),
 )
 
+
 def _looks_like_key(label: str) -> bool:
     """SC4 resource keys, message/group/instance IDs, etc. are
     conventionally shown in hex across SC4 modding tools."""
@@ -142,11 +143,12 @@ def _looks_like_key(label: str) -> bool:
 
 class RecordEditor(wx.Panel):
     def __init__(
-        self,
-        parent,
-        on_change: Callable[[str], None],
-        on_navigate: Optional[Callable[[str], None]] = None,
-        on_export: Optional[Callable[[str, bool], None]] = None,
+            self,
+            parent,
+            on_change: Callable[[str], None],
+            on_navigate: Callable[[str], None] | None = None,
+            on_export: Callable[[str, bool], None] | None = None,
+            on_game_load: Callable[[str], None] | None = None,
     ):
         super().__init__(parent)
         self._session: Optional[EditorSession] = None
@@ -154,6 +156,7 @@ class RecordEditor(wx.Panel):
         self._on_change = on_change
         self._on_navigate = on_navigate
         self._on_export = on_export
+        self._on_game_load = on_game_load
         self._references: list = []
         self._outgoing_references: list = []
         self._reference_rows: list = []
@@ -235,8 +238,9 @@ class RecordEditor(wx.Panel):
         # match the tab's existing one-level-deep preview.
         self.fx_preview_dependencies = wx.CheckBox(self.fx_preview_page, label="Include dependencies")
         self.fx_preview_copy = wx.Button(self.fx_preview_page, label="Copy to Clipboard")
+        self.fx_preview_game = wx.Button(self.fx_preview_page, label="Load in Game")
         self.fx_preview_export = wx.Button(self.fx_preview_page, label="Export as .fx...")
-        self.fx_preview = FxPreview(self.fx_preview_page)
+        self.fx_preview = FxPreview(self.fx_preview_page, read_only=False)
 
         self.references_label = wx.StaticText(self.references_panel, label="References · 0 in · 0 out")
         reference_font = self.references_label.GetFont()
@@ -265,6 +269,7 @@ class RecordEditor(wx.Panel):
         fx_preview_header.Add(self.fx_preview_status, 1, wx.ALIGN_CENTER_VERTICAL)
         fx_preview_header.Add(self.fx_preview_dependencies, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, self.FromDIP(6))
         fx_preview_header.Add(self.fx_preview_copy, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, self.FromDIP(6))
+        fx_preview_header.Add(self.fx_preview_game, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, self.FromDIP(6))
         fx_preview_header.Add(self.fx_preview_export, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, self.FromDIP(6))
 
         fx_preview_sizer = wx.BoxSizer(wx.VERTICAL)
@@ -285,6 +290,7 @@ class RecordEditor(wx.Panel):
         root_sizer = wx.BoxSizer(wx.VERTICAL)
         root_sizer.Add(self.reference_splitter, 1, wx.EXPAND)
         self.SetSizer(root_sizer)
+        self.reference_splitter.Initialize(self.editor_panel)
         self._show_references(False)
 
         self.grid.Bind(wxpg.EVT_PG_CHANGED, self._on_prop_changed)
@@ -296,6 +302,7 @@ class RecordEditor(wx.Panel):
         self.references_list.Bind(wx.EVT_CONTEXT_MENU, self._on_reference_context)
         self.references_list.Bind(wx.EVT_SIZE, self._on_references_size)
         self.fx_preview_copy.Bind(wx.EVT_BUTTON, self._on_fx_copy)
+        self.fx_preview_game.Bind(wx.EVT_BUTTON, self._on_fx_game_load)
         self.fx_preview_export.Bind(wx.EVT_BUTTON, self._on_fx_export)
         self.fx_preview_dependencies.Bind(wx.EVT_CHECKBOX, self._on_fx_dependencies_toggled)
         self._update_fx_preview()
@@ -356,6 +363,11 @@ class RecordEditor(wx.Panel):
             return
         transitive = self.fx_preview_dependencies.IsShown() and self.fx_preview_dependencies.GetValue()
         self._on_export(path, transitive)
+
+    def _on_fx_game_load(self, _evt) -> None:
+        text = self.fx_preview.GetText()
+        if text and self._on_game_load is not None:
+            self._on_game_load(text)
 
     def _set_fx_tab_visible(self, visible: bool) -> None:
         index = self.notebook.FindPage(self.fx_preview_page)
@@ -570,13 +582,13 @@ class RecordEditor(wx.Panel):
             self.grid.SetPropertyCell(prop, 2, preview)
 
     def _make_property(
-        self,
-        label: str,
-        path: str,
-        kind: str,
-        node: _nodes.Node,
-        *,
-        property_name: Optional[str] = None,
+            self,
+            label: str,
+            path: str,
+            kind: str,
+            node: _nodes.Node,
+            *,
+            property_name: Optional[str] = None,
     ):
         property_name = property_name or path
         value = node.value
@@ -600,8 +612,8 @@ class RecordEditor(wx.Panel):
             attr_name = _paths.tokenize(path)[-1]
             record_type = self._parent_record_type(path)
             if (
-                isinstance(attr_name, str)
-                and (record_type, attr_name) in _HEX_FIELDS
+                    isinstance(attr_name, str)
+                    and (record_type, attr_name) in _HEX_FIELDS
             ) or _looks_like_key(label):
                 prop.SetAttribute(wxpg.PG_UINT_BASE, wxpg.PG_BASE_HEX)
                 prop.SetAttribute(wxpg.PG_UINT_PREFIX, wxpg.PG_PREFIX_0x)
@@ -615,13 +627,13 @@ class RecordEditor(wx.Panel):
         return None
 
     def _make_bitset_property(
-        self,
-        label: str,
-        path: str,
-        wire_type: str,
-        value: int,
+            self,
+            label: str,
+            path: str,
+            wire_type: str,
+            value: int,
     ) -> wxpg.PGProperty:
-        bit_count = int(wire_type[len("bitset<") : -1])
+        bit_count = int(wire_type[len("bitset<"): -1])
         return wxpg.StringProperty(label, path, self._format_hex(value))
 
     def _add_bitset_children(self, page, parent, path: str, wire_type: str, value: int) -> None:
@@ -635,7 +647,7 @@ class RecordEditor(wx.Panel):
         parent.ChangeFlag(_PG_READ_ONLY, True)
         self._bit_parent_properties[path] = parent
         parent.SetExpanded(True)
-        bit_count = int(wire_type[len("bitset<") : -1])
+        bit_count = int(wire_type[len("bitset<"): -1])
         attr_name = _paths.tokenize(path)[-1]
         record_type = self._parent_record_type(path)
         labels = named_bits(record_type, attr_name, bit_count) if isinstance(attr_name, str) else {}
@@ -658,13 +670,13 @@ class RecordEditor(wx.Panel):
             page.AppendIn(parent, unnamed)
 
     def _make_vector_property(
-        self,
-        label: str,
-        path: str,
-        vector: WireVector,
-        page,
-        *,
-        parent=None,
+            self,
+            label: str,
+            path: str,
+            vector: WireVector,
+            page,
+            *,
+            parent=None,
     ) -> wxpg.PGProperty:
         """Add a compact, expandable view of a wire vector to its parent.
 
@@ -862,7 +874,8 @@ class RecordEditor(wx.Panel):
             self._update_fx_preview()
             self._on_change(path)
             return
-        path = client_data[1] if isinstance(client_data, tuple) and client_data and client_data[0] == "path" else prop.GetName()
+        path = client_data[1] if isinstance(client_data, tuple) and client_data and client_data[
+            0] == "path" else prop.GetName()
         current = _paths.get_path(self._session.working, path)
         kind = _nodes.classify(current)
         raw_value = prop.GetValue()
@@ -879,7 +892,8 @@ class RecordEditor(wx.Panel):
                 self.show_record(self._session, self._record_path)
                 return
         elif kind == "scalar":
-            wire_type = current.wire_type if isinstance(current, Raw) else ("f32" if isinstance(current, float) else "u32")
+            wire_type = current.wire_type if isinstance(current, Raw) else (
+                "f32" if isinstance(current, float) else "u32")
             new_value = float(raw_value) if wire_type == "f32" else int(raw_value)
         else:
             new_value = raw_value
@@ -1038,7 +1052,8 @@ class RecordEditor(wx.Panel):
             self.detail.SetLabel(" ")
             return
         client_data = self._property_data(prop)
-        path = client_data[1] if isinstance(client_data, tuple) and client_data and client_data[0] in ("path", "bit") else prop.GetName()
+        path = client_data[1] if isinstance(client_data, tuple) and client_data and client_data[0] in ("path",
+                                                                                                       "bit") else prop.GetName()
         node = api.get_node(self._session, path)
         bits = []
         if node.raw is not None:

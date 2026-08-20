@@ -23,6 +23,7 @@ class cIGZMessage2Standard;
 class cISC4City;
 class cISC4EffectsManager;
 class cISC4VisualEffect;
+class EffectsGameCommands;
 
 class SC4EffectsExtensionsDirector final : public cRZMessage2COMDirector
 {
@@ -83,6 +84,7 @@ public:
     bool ReadPluginFxFile(const std::filesystem::path& path, std::string& contents) const;
     bool WritePluginFxFile(const std::filesystem::path& path, const std::string& contents);
     bool RefreshKnownEffects();
+    bool LoadFxFile(const std::filesystem::path& path, std::string& status);
     bool DumpManagerMemory();
 
 private:
@@ -103,6 +105,7 @@ private:
     cISC4VisualEffect* trackedEffect_ = nullptr;
     cIGZDBSegmentPackedFile* packedEffectsSegment_ = nullptr;
     std::unique_ptr<EffectsBootstrapHooks> hooks_;
+    std::unique_ptr<EffectsGameCommands> gameCommands_;
     std::unique_ptr<EffectsPanel> panel_;
     bool panelRegistered_ = false;
     bool effectsHookInstalled_ = false;

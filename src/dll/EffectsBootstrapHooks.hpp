@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <functional>
+#include <string>
 #include <string_view>
 
 class EffectsBootstrapHooks final
@@ -20,6 +21,7 @@ public:
 
     void ConfigureRecursiveLoading(bool enabled, std::filesystem::path rootPath);
     bool Install(uint16_t gameVersion) noexcept;
+    bool LoadFxFile(void* effectsManager, const std::filesystem::path& path, std::string& error) noexcept;
     void Uninstall() noexcept;
 
 private:

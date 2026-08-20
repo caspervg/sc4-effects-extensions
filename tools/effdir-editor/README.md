@@ -46,6 +46,17 @@ uv run effdir-editor
 uv run python -m effdir_editor
 ```
 
+## Live game preview
+
+On Windows, the **Live Game** pane displays SC4's window through a DWM thumbnail and controls the
+`SC4EffectsExtensions.dll` preview commands. Start the game in windowed or borderless mode with
+`-NetCommandGenerator:enabled`, load a city, and use **Check** to connect to `127.0.0.1:50020`.
+
+**Load / Reload .fx** accepts an `.fx` file at any local path. Reloading an effect with the same name
+replaces its catalog definition; an active tracked preview is stopped and recreated automatically.
+The game listener has no authentication, so block inbound network access to SimCity 4 in the Windows
+firewall.
+
 On Windows, the editor opts into per-monitor DPI awareness and scales its
 custom-painted geometry with wxPython DIP units, so it remains sharp and
 usable when Windows display scaling is above 100% or when the window moves

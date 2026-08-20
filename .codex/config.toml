@@ -9,3 +9,6 @@ approval_mode = "approve"
 
 [mcp_servers.clion.tools.skill_search]
 approval_mode = "approve"
+
+[mcp_servers.clion.tools.reformat_file]
+approval_mode = "approve"
