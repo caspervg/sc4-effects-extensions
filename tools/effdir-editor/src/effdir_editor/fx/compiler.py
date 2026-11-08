@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import copy
 import math
+import os
 import struct
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional
@@ -37,7 +38,7 @@ from ..model.resource import EffDirResource, TrailingFloatMetadata, default_reso
 from ..model.shake import ShakeDescriptor, default_shake
 from ..wire import Bounds3, Vec2, Vec3, WireString, WireVector, make_raw_f32, make_raw_u8, make_raw_u16, make_raw_u32
 from .float32 import f32, normalized as _normalized, rotate as _rotate
-from .parser import Command, FxError, evaluate, parse_file
+from .parser import Command, FxError, evaluate, expand_includes, parse_file
 
 _PARTICLE_DRAW = {"decal": 0, "decalInvertDepth": 1, "decalIgnoreDepth": 2, "depthDecal": 3, "depthDecalMasked": 4, "additive": 5, "additiveIgnoreDepth": 6, "modulate": 7}
 _DECAL_DRAW = {"decal": 0, "additive": 1, "modulate": 2, "decalInvertDepth": 3, "decalNoOverlap": 4}
@@ -67,7 +68,7 @@ class Args:
         self.argv: List[str] = [command.name] + list(command.args)
 
     def fail(self, message: str) -> "FxError":
-        return FxError(message, file=self.c.file, line=self.command.line)
+        return FxError(message, file=self.c.current_file, line=self.command.line)
 
     def positional(self, minimum: int = 0) -> List[str]:
         out: List[str] = []
@@ -245,6 +246,7 @@ class FxCompiler:
 
     def __init__(self, *, file: str = "") -> None:
         self.file = file
+        self.current_file = file
         self.resource = default_resource()
         self.textures: Dict[str, int] = {}
         self.models: Dict[str, int] = {}
@@ -258,6 +260,8 @@ class FxCompiler:
         self.sequence_names: Dict[str, int] = {}
         self.effect_by_key: Dict[tuple, int] = {}
         self.effect_names: Dict[str, List[int]] = {}
+        self.effect_vector_capacity = 0
+        self.child_capacities: List[int] = []
         self.name_table = _HashMultimap()
         self.key_map: List[StringU32U32Record] = []
         self.triggers: List[MessageTrigger] = []
@@ -296,6 +300,7 @@ class FxCompiler:
         return resource
 
     def _execute(self, command: Command) -> None:
+        self.current_file = command.file or self.file
         name = self._substitute(command.name, command.line)
         args = [self._substitute(a, command.line) for a in command.args]
         expanded = Command(name, args, command.line, command.body)
@@ -304,7 +309,7 @@ class FxCompiler:
             return
         handler = self._find_handler(name)
         if handler is None:
-            raise FxError(f"Unknown command '{name}'", file=self.file, line=command.line)
+            raise FxError(f"Unknown command '{name}'", file=self.current_file, line=command.line)
         arguments = Args(self, expanded)
         handler(arguments)
         arguments.check_handled()
@@ -355,7 +360,7 @@ class FxCompiler:
                 j += 1
             value = self._lookup_variable(text[start:j])
             if value is None:
-                raise FxError(f"Unknown variable: '{text[start:j]}'", file=self.file, line=line)
+                raise FxError(f"Unknown variable: '{text[start:j]}'", file=self.current_file, line=line)
             out.append(value)
             if braced and j < len(text) and text[j] == "}":
                 j += 1
@@ -380,7 +385,7 @@ class FxCompiler:
                 j += 1
             key = text[start:j]
             if key not in params:
-                raise FxError(f"Unknown parameter: '{key}'", file=self.file, line=line)
+                raise FxError(f"Unknown parameter: '{key}'", file=self.current_file, line=line)
             out.append(params[key])
             if braced and j < len(text) and text[j] == "}":
                 j += 1
@@ -389,7 +394,7 @@ class FxCompiler:
 
     def _define(self, command: Command) -> None:
         if not command.args:
-            raise FxError("define: missing definition name", file=self.file, line=command.line)
+            raise FxError("define: missing definition name", file=self.current_file, line=command.line)
         params = command.args[1].split() if len(command.args) > 1 else []
         self.macros[command.args[0]] = _Macro(params, command.body or [])
 
@@ -460,7 +465,7 @@ class FxCompiler:
         values = a.positional(1)
         if len(values) != 1:
             raise a.fail("eval takes exactly one string argument")
-        commands = parse_file(values[0] + "\n", file=self.file)
+        commands = parse_file(values[0] + "\n", file=self.current_file)
         if len(commands) != 1:
             raise a.fail("eval expects exactly one command")
         commands[0].line = a.command.line
@@ -751,7 +756,7 @@ class FxCompiler:
         if velocity:
             speed = a.number(velocity[1]) if len(velocity) > 1 else 1.0
             vary = a.number(velocity[2]) if len(velocity) > 2 else 0.0
-            direction = _normalized(a.vec3(velocity[0]))
+            direction = _normalized(a.vec3(velocity[0]), "yzx")
             p.emit_velocity_bounds = _cube(direction, vary)
             p.emit_speed = Vec2(f32(speed * f32(1.0 - vary)), f32(speed * f32(1.0 + vary)))
         speed_switch = a.switch("speed", 1)
@@ -763,7 +768,7 @@ class FxCompiler:
         if direction_switch:
             direction = a.vec3(direction_switch[0])
             if direction.x * direction.x + direction.y * direction.y + direction.z * direction.z > 0.0:
-                direction = _normalized(direction)
+                direction = _normalized(direction, "zyx")
             vary = Vec3(0.0, 0.0, 0.0)
             if len(direction_switch) > 1:
                 parts = direction_switch[1].split()
@@ -896,7 +901,7 @@ class FxCompiler:
             p.force = Vec3(f32(p.force.x + 0.0), f32(p.force.y - g), f32(p.force.z + 0.0))
         wind = a.switch("wind", 1)
         if wind:
-            direction = _normalized(a.vec3(wind[0]))
+            direction = _normalized(a.vec3(wind[0]), "zyx")
             if len(wind) > 1:
                 magnitude = a.number(wind[1])
                 direction = Vec3(f32(magnitude * direction.x), f32(magnitude * direction.y), f32(magnitude * direction.z))
@@ -1038,7 +1043,7 @@ class FxCompiler:
             _set_bit(p, "flags_2", 8)
         alpha = a.switch("alpha", 2)
         if alpha:
-            p.alpha_warp_direction = _normalized(a.vec3(alpha[0]))
+            p.alpha_warp_direction = _normalized(a.vec3(alpha[0]), "xyz")
             p.alpha_warp_curve = _vector(a.ranged(v, 0.0, 1.0) for v in alpha[1:])
             _set_bit(p, "flags_2", 8)
 
@@ -1405,9 +1410,13 @@ class FxCompiler:
         key = (key_name, e.priority.value)
         if key in self.effect_by_key:
             index = self.effect_by_key[key]
+            self._assign_children(index, self.resource.effect_descriptions.items[index], e)
             self.resource.effect_descriptions.items[index] = e
         else:
             index = len(self.resource.effect_descriptions.items)
+            if index == self.effect_vector_capacity:
+                self._grow_effect_vector(index)
+            self.child_capacities.append(len(e.descriptions.items))
             self.effect_by_key[key] = index
             self.effect_names.setdefault(key_name, []).append(index)
             self.resource.effect_descriptions = _vector(self.resource.effect_descriptions.items + [e])
@@ -1436,6 +1445,32 @@ class FxCompiler:
                 EventRecord(flags=event.flags, name=WireString.from_text(lowered) if event.name.raw_bytes else event.name, time=event.time, value=value)
             )
         e.events = _vector(events)
+
+    def _assign_children(self, index: int, previous: EffectDescription, new: EffectDescription) -> None:
+        """`vector<cDescriptionRec>::operator=` over an existing effect.
+
+        `cS3DTransform::operator=` (Mac `0x0062BA46`) adds one to its own
+        counter and never copies the source's, while its copy constructor
+        (`0x0066039A`) zeroes it. The counter is the serialized `revision`,
+        so it records how often a child slot was assigned over.
+        """
+
+        old, fresh = previous.descriptions.items, new.descriptions.items
+        if len(fresh) > self.child_capacities[index]:
+            self.child_capacities[index] = len(fresh)  # reallocated, every element copy-constructed
+            return
+        for before, after in zip(old, fresh):
+            after.legacy_transform.revision = make_raw_u32((before.legacy_transform.revision.value + 1) & 0xFF)
+
+    def _grow_effect_vector(self, size: int) -> None:
+        """The effect vector doubles when full, and its copy constructors
+        zero every child counter and shrink each child vector to fit."""
+
+        self.effect_vector_capacity = size + max(size, 1)
+        for index, effect in enumerate(self.resource.effect_descriptions.items):
+            self.child_capacities[index] = len(effect.descriptions.items)
+            for d in effect.descriptions.items:
+                d.legacy_transform.revision = make_raw_u32(0)
 
     def _child_record(self, a: Args, name: str, component_type: int) -> DescriptionRecord:
         d = default_description_record()
@@ -1776,7 +1811,11 @@ class FxCompiler:
         self._run_body(a.command, a.command.name)
 
     def _unsupported(self, a: Args) -> None:
-        raise a.fail(f"{a.command.name} is not supported by the compiler")
+        # The game merges the loaded resource into the collection being
+        # saved (`AddToCollection`, Mac 0x003E4120), and a resource stores no
+        # names for its pools, so compiling this would only copy another
+        # resource into the output.
+        raise a.fail("loadResource is not supported by the compiler: it would copy the whole loaded resource into this one")
 
     def _no_record(self, a: Args) -> None:
         """Commands the game accepts that change nothing in the resource."""
@@ -1941,17 +1980,22 @@ _TOP_LEVEL: Dict[str, Callable] = {
 }
 
 
-def compile_source(text: str, *, file: str = "") -> EffDirResource:
-    """Compile `.fx` source text to a resource model, or raise `FxError`."""
+def compile_source(text: str, *, file: str = "", include_dir: Optional[str] = None) -> EffDirResource:
+    """Compile `.fx` source text to a resource model, or raise `FxError`.
 
+    `include` paths are relative to `include_dir` (default: the working
+    directory).
+    """
+
+    source, origins = expand_includes(text, file, include_dir or os.getcwd())
     compiler = FxCompiler(file=file)
-    compiler.run(parse_file(text, file=file))
+    compiler.run(parse_file(source, file=file, origins=origins))
     return compiler.finish()
 
 
-def compile_to_bytes(text: str, *, file: str = "") -> bytes:
+def compile_to_bytes(text: str, *, file: str = "", include_dir: Optional[str] = None) -> bytes:
     """Compile `.fx` source text to packed EFFDIR bytes."""
 
     from ..model.resource import write_resource
 
-    return write_resource(compile_source(text, file=file))
+    return write_resource(compile_source(text, file=file, include_dir=include_dir))

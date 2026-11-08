@@ -211,15 +211,24 @@ def _emit_effects(writer: FxWriter, coverage: Coverage, resource: EffDirResource
     plan = _effect_emission_plan(resource, coverage)
     deferred_after: Dict[int, List[int]] = {}
     for real, predecessor in plan.deferred.items():
-        deferred_after.setdefault(predecessor, []).append(real)
+        if real != predecessor:
+            deferred_after.setdefault(predecessor, []).append(real)
 
     def primary_name(effect_index: int) -> str:
         aliases = [a for a in names.effect_names.get(effect_index, []) if a]
         return aliases[0] if aliases else f"effect_{effect_index}"
 
+    def ghost(effect_index: int, orphans: List[Tuple[int, int]], children: int = 0) -> None:
+        _emit_ghost(writer, coverage, resource, names, effect_index, primary_name(effect_index), orphans, children)
+
+    def child_count(effect_index: int) -> int:
+        return len(resource.effect_descriptions.items[effect_index].descriptions.items)
+
     def emit_real(effect_index: int) -> None:
-        if effect_index in plan.orphans:
-            _emit_ghost(writer, coverage, resource, names, effect_index, primary_name(effect_index), plan.orphans[effect_index])
+        for _ in range(plan.redefinitions.get(effect_index, 0) - 1):
+            ghost(effect_index, [], child_count(effect_index))
+        if effect_index in plan.orphans and effect_index not in plan.redefinitions:
+            ghost(effect_index, plan.orphans[effect_index])
         effect = resource.effect_descriptions.items[effect_index]
         aliases = [a for a in names.effect_names.get(effect_index, []) if a] or [f"effect_{effect_index}"]
         primary, *extra = aliases
@@ -237,15 +246,19 @@ def _emit_effects(writer: FxWriter, coverage: Coverage, resource: EffDirResource
             writer.blank()
 
     def flush(after: int) -> None:
-        for real in deferred_after.get(after, []):
+        for real in deferred_after.pop(after, []):
             emit_real(real)
             flush(real)
 
     for effect_index in range(len(resource.effect_descriptions.items)):
         if effect_index in plan.deferred:
-            _emit_ghost(writer, coverage, resource, names, effect_index, primary_name(effect_index), [])
-        else:
-            emit_real(effect_index)
+            if effect_index in plan.redefinitions:
+                ghost(effect_index, plan.orphans.get(effect_index, []), child_count(effect_index))
+            else:
+                ghost(effect_index, [])
+            if plan.deferred[effect_index] != effect_index:
+                continue
+        emit_real(effect_index)
         flush(effect_index)
 
 
@@ -293,10 +306,27 @@ class _EmissionPlan:
       redefined effect created them, then the second replaced it, so a
       ghost right before the real definition recreates them at the right
       pool position.
+    - `redefinitions` maps an effect to how many times its children were
+      assigned over, which is what the stored `revision` counts. An
+      effect listed here is defined that many extra times with as many
+      children, after the last growth of the effect vector, because growth
+      zeroes the counters of every effect (see `_outer_growth_index`).
     """
 
     deferred: Dict[int, int] = field(default_factory=dict)
     orphans: Dict[int, List[Tuple[int, int]]] = field(default_factory=dict)
+    redefinitions: Dict[int, int] = field(default_factory=dict)
+
+
+def _outer_growth_index(count: int) -> int:
+    """Index of the last effect whose addition reallocated the effect vector
+    (capacity doubles from 1, so that is the largest power of two below
+    `count`)."""
+
+    index = 0 if count < 2 else 1
+    while index and index * 2 < count:
+        index *= 2
+    return index
 
 
 def _effect_emission_plan(resource: EffDirResource, coverage: Coverage) -> _EmissionPlan:
@@ -335,6 +365,20 @@ def _effect_emission_plan(resource: EffDirResource, coverage: Coverage) -> _Emis
             if first is not None and first > effect_index:
                 predecessors[effect_index] = max(predecessors.get(effect_index, 0), first)
 
+    last_growth = _outer_growth_index(count)
+    for effect_index, effect in enumerate(effects):
+        revisions = {d.legacy_transform.revision.value & 0xFF for d in effect.descriptions.items}
+        if not any(revisions):
+            continue
+        if len(revisions) != 1:
+            coverage.note(
+                f"effect_descriptions[{effect_index}]",
+                "unsupported",
+                f"children have unequal revision values {sorted(revisions)}, which equal-sized redefinitions cannot produce",
+            )
+        plan.redefinitions[effect_index] = max(revisions)
+        predecessors[effect_index] = max(predecessors.get(effect_index, 0), max(last_growth, effect_index))
+
     plan.deferred = predecessors
 
     for component_type, attribute in _ANON_POOLS:
@@ -347,6 +391,13 @@ def _effect_emission_plan(resource: EffDirResource, coverage: Coverage) -> _Emis
                 continue
             host = owner[(component_type, nexts[0])]
             plan.orphans.setdefault(host, []).append((component_type, orphan))
+    for host, orphans in plan.orphans.items():
+        if host >= last_growth and host not in plan.redefinitions and len(orphans) >= len(effects[host].descriptions.items):
+            coverage.note(
+                f"effect_descriptions[{host}]",
+                "unsupported",
+                "the ghost that recreates its orphaned pool records leaves a nonzero revision on this effect's children",
+            )
     return plan
 
 
@@ -358,10 +409,13 @@ def _emit_ghost(
     effect_index: int,
     name: str,
     orphans: List[Tuple[int, int]],
+    children: int = 0,
 ) -> None:
     """An effect body that a later definition of the same name and priority
-    replaces: it fixes this name's record index (an empty ghost) or
-    recreates unreferenced anonymous pool records (a ghost with children)."""
+    replaces: it fixes this name's record index (an empty ghost), recreates
+    unreferenced anonymous pool records, or provides `children` slots for
+    the next definition to assign over. Filler children name an existing
+    pool so they leave nothing behind in any pool."""
 
     effect = resource.effect_descriptions.items[effect_index]
     header = f"effect {quote_name(name)}"
@@ -372,8 +426,28 @@ def _emit_ghost(
         lines = _anonymous_lines(resource, names, component_type, index, coverage)
         if lines:
             writer.multiline_command(lines)
+    filler = _ghost_filler(resource, names, effect_index)
+    missing = max(children - len(orphans), 0)
+    if missing and filler is None:
+        coverage.note(f"effect_descriptions[{effect_index}]", "unsupported", "no pool or earlier effect exists to fill the ghost's child slots, so its revision cannot be reproduced")
+    elif missing:
+        for _ in range(missing):
+            writer.line(filler)
     writer.end()
     writer.blank()
+
+
+def _ghost_filler(resource: EffDirResource, names: ResolvedNames, effect_index: int) -> Optional[str]:
+    if resource.particles.items:
+        return f"particleEffect {quote_name(names.by_collection.get(('particles', 0), 'particle_0'))}"
+    if resource.decals.items:
+        return f"decalEffect {quote_name(names.by_collection.get(('decals', 0), 'decal_0'))}"
+    if resource.dynamic_particles.items:
+        return f"dynamicParticleEffect {quote_name(names.by_collection.get(('dynamic_particles', 0), 'dynamic_particle_0'))}"
+    if resource.components.sequences.items:
+        return f"sequenceEffect {quote_name(names.by_collection.get(('components.sequences', 0), 'sequence_0'))}"
+    earlier = next((n for i in range(effect_index) for n in names.effect_names.get(i, []) if n), None)
+    return f"visualEffect {quote_name(earlier)}" if earlier else None
 
 
 def _anonymous_lines(resource: EffDirResource, names: ResolvedNames, component_type: int, index: int, coverage: Coverage) -> List[str]:
@@ -391,51 +465,6 @@ def _anonymous_lines(resource: EffDirResource, names: ResolvedNames, component_t
     if component_type == 8:
         return camera_effect_lines(components.cameras.items[index], coverage=coverage, path=path) or ["cameraEffect"]
     return []
-
-
-def _visual_effect_order(resource: EffDirResource, coverage: Coverage) -> List[int]:
-    """Stored record order, moved only as far as `visualEffect` requires.
-
-    Stored order is the order the game's parser saw, which matters for the
-    byte-level layout. Only a `visualEffect` child must name an effect
-    defined earlier (`Unknown visual effect` otherwise), so that is the
-    only edge imposed here, and a name-based `timedEffect`, `chainEffect`, or
-    `play` reference may legitimately point forward.
-    """
-
-    by_name = _effect_indices_by_name(resource)
-    order: List[int] = []
-    visited: Set[int] = set()
-    on_stack: Set[int] = set()
-
-    def visit(index: int) -> None:
-        if index in visited:
-            return
-        on_stack.add(index)
-        for description in resource.effect_descriptions.items[index].descriptions.items:
-            if description.component_type.value != 2:
-                continue
-            # The parser only asks whether the name exists yet, so the
-            # earliest definition of a name satisfies every reference to it.
-            targets = [t for t in by_name.get((description.name.decoded or "").casefold(), []) if 0 <= t < len(resource.effect_descriptions.items)]
-            target = min(targets, default=None)
-            if target is None or target <= index:
-                continue
-            if target in on_stack:
-                coverage.note(
-                    f"effect_descriptions[{index}]",
-                    "info",
-                    f"effect_descriptions[{target}] and this effect reference each other through visualEffect, so the stored order was kept",
-                )
-            elif target not in visited:
-                visit(target)
-        on_stack.discard(index)
-        visited.add(index)
-        order.append(index)
-
-    for index in range(len(resource.effect_descriptions.items)):
-        visit(index)
-    return order
 
 
 PREVIEWABLE_COLLECTIONS = frozenset(

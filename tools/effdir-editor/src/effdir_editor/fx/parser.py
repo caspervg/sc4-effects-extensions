@@ -19,9 +19,10 @@ Numeric arguments are evaluated separately by `evaluate`.
 from __future__ import annotations
 
 import math
+import os
 import re
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, Optional, Sequence, Tuple
 
 from lark import Lark, Transformer, UnexpectedInput, v_args
 from lark.exceptions import UnexpectedCharacters, UnexpectedEOF, UnexpectedToken
@@ -86,6 +87,7 @@ class Command:
     args: List[str]
     line: int
     body: Optional[List["Command"]] = field(default=None)
+    file: str = ""
 
 
 def _unquote(token: str) -> str:
@@ -152,20 +154,84 @@ def strip_comments(text: str) -> str:
     return "\n".join(out) + "\n"
 
 
-def parse_file(text: str, *, file: str = "") -> List[Command]:
-    """Parse `.fx` text into a command tree, or raise `FxError`."""
+Origin = Tuple[str, int]
+_INCLUDE_DEPTH_LIMIT = 32
+_LINE_TOKEN = re.compile(r"""(?:[^\s"'\[({]|"[^"\n]*"|'[^'\n]*')(?:[^\s"']|"[^"\n]*"|'[^'\n]*')*""")
+
+
+def expand_includes(text: str, file: str, directory: str, depth: int = 0) -> Tuple[str, List[Origin]]:
+    """Replace `include` and `sinclude` lines with the named file's lines.
+
+    `cFileParser::DoParseFile` (Mac `0x0041DB38`) handles both keywords per
+    line before command dispatch, with a separate comment state per file and
+    paths relative to the including file. Both keywords run the same path,
+    so a missing file is an error for `sinclude` too in this build. Returns
+    the expanded text and the `(file, line)` origin of each of its lines.
+    """
+
+    lines: List[str] = []
+    origins: List[Origin] = []
+    stripped = strip_comments(text).split("\n")[:-1]
+    for number, line in enumerate(stripped, 1):
+        tokens = _LINE_TOKEN.findall(line)
+        if not tokens or tokens[0] not in ("include", "sinclude"):
+            lines.append(line)
+            origins.append((file, number))
+            continue
+        if len(tokens) != 2:
+            raise FxError(f'"{tokens[0]}" takes a single argument', file=file, line=number)
+        if depth >= _INCLUDE_DEPTH_LIMIT:
+            raise FxError("include files nest too deeply", file=file, line=number)
+        name = _unquote(tokens[1])
+        path = name if os.path.isabs(name) else os.path.join(directory, name)
+        try:
+            with open(path, "rb") as stream:
+                included = stream.read().decode("latin-1")
+        except OSError as error:
+            raise FxError(f"Couldn't open file '{name}'", file=file, line=number) from error
+        inner_text, inner_origins = expand_includes(included, name, os.path.dirname(path), depth + 1)
+        lines.extend(inner_text.split("\n")[:-1])
+        origins.extend(inner_origins)
+    return "\n".join(lines) + "\n", origins
+
+
+def _apply_origins(commands: List[Command], origins: Sequence[Origin]) -> None:
+    for command in commands:
+        if 0 < command.line <= len(origins):
+            command.file, command.line = origins[command.line - 1]
+        if command.body:
+            _apply_origins(command.body, origins)
+
+
+def parse_file(text: str, *, file: str = "", origins: Optional[Sequence[Origin]] = None) -> List[Command]:
+    """Parse `.fx` text into a command tree, or raise `FxError`.
+
+    `origins` maps each line of an expanded source back to where it came
+    from, so positions stay right across `include` files.
+    """
 
     source = strip_comments(text)
+
+    def where(line: int) -> Origin:
+        if origins is not None and 0 < line <= len(origins):
+            return origins[line - 1]
+        return file, line
+
     try:
-        return _TRANSFORMER.transform(_FILE_PARSER.parse(source))
+        commands = _TRANSFORMER.transform(_FILE_PARSER.parse(source))
     except UnexpectedEOF as error:
         raise FxError("unexpected end of file: a block is missing its `end`", file=file) from error
     except UnexpectedToken as error:
-        raise FxError(_describe_token(error), file=file, line=error.line or 0) from error
+        at_file, at_line = where(error.line or 0)
+        raise FxError(_describe_token(error), file=at_file, line=at_line) from error
     except UnexpectedCharacters as error:
-        raise FxError(f"cannot read input at column {error.column}: {error.char!r}", file=file, line=error.line) from error
+        at_file, at_line = where(error.line)
+        raise FxError(f"cannot read input at column {error.column}: {error.char!r}", file=at_file, line=at_line) from error
     except UnexpectedInput as error:  # pragma: no cover - Lark's remaining kinds
         raise FxError(str(error), file=file, line=getattr(error, "line", 0)) from error
+    if origins is not None:
+        _apply_origins(commands, origins)
+    return commands
 
 
 def _describe_token(error: UnexpectedToken) -> str:

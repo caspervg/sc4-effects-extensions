@@ -36,13 +36,31 @@ def next_f32(value: float, steps: int = 1) -> float:
     return struct.unpack("<f", struct.pack("<I", bits & 0xFFFFFFFF))[0]
 
 
-def normalized(v: Vec3) -> Vec3:
-    """`normalized`/`norm` (Mac `0x006D0458`): divide by the single-precision length."""
+def normalized(v: Vec3, order: str = "xyz") -> Vec3:
+    """Unit vector the way the Windows parsers compute it: the inverse length
+    times each component, with the x87 running in single precision.
 
-    length = f32(math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z))
-    if length == 0.0:
+    Every step (`fmul`, `fadd`, `fsqrt`, `fdiv`) rounds to 24 bits, so the
+    order of the squared terms matters. `order` is the order the parser adds
+    them in (`-alpha`: xyz, `-dir` and `-wind`: zyx, `-velocity`: yzx,
+    `-vel`: xyz, read from `0x0059B680`, `0x0059C280`, `0x0059A820`). The
+    instructions keep the inverse in a register, so the rounded inverse
+    that vanilla's values require can only come from the x87 precision
+    control. The CRT sets 53 bits at startup (`__setdefaultprecision`), and
+    records 85 and 457 of the vanilla resource are unreachable at 53 bits, so
+    the 24-bit state is inferred (Direct3D setup is the usual cause, and
+    nothing in the parser sets it).
+    """
+
+    values = {"x": v.x, "y": v.y, "z": v.z}
+    total = 0.0
+    for index, axis in enumerate(order):
+        square = f32(values[axis] * values[axis])
+        total = square if index == 0 else f32(total + square)
+    if total <= 0.0:
         return Vec3(0.0, 0.0, 0.0)
-    return Vec3(f32(v.x / length), f32(v.y / length), f32(v.z / length))
+    inverse = f32(1.0 / f32(math.sqrt(total)))
+    return Vec3(f32(v.x * inverse), f32(v.y * inverse), f32(v.z * inverse))
 
 
 _TAU32 = f32(2.0 * math.pi)
@@ -51,9 +69,9 @@ _TAU32 = f32(2.0 * math.pi)
 def rotate(matrix, axis: str, turns: float) -> None:
     """`cS3DMatrix3::RotateX/Y/Z`: post-multiply, text angles in turns."""
 
-    # The product stays unrounded: Windows feeds the x87 extended product to
-    # fcos/fsin (0x005989D0), and a double holds it exactly.
-    angle = turns * _TAU32
+    # `fsin`/`fcos` take the product of `fmul`, which the 24-bit x87 has
+    # already rounded to single precision (0x005989D0).
+    angle = f32(turns * _TAU32)
     c = f32(math.cos(angle))
     s = f32(math.sin(angle))
     rows = [matrix.row_0, matrix.row_1, matrix.row_2]
@@ -117,37 +135,34 @@ def nearby_singles(value: float, steps: int = 3):
         yield next_f32(value, -step)
 
 
-def fit_unit(vector: Vec3) -> Optional[Vec3]:
+def fit_unit(vector: Vec3, order: str = "xyz") -> Optional[Vec3]:
     """A vector that normalizes to exactly `vector`, or None.
 
-    The stored value is what `normalized` returned. Passing it back through
-    normalize can shift a component by one unit in the last place, so try
-    the value itself and then simple scalings of it.
+    The stored value is what `normalized` returned, and passing it back can
+    shift a component by a unit in the last place. Try the value itself,
+    then single-precision neighbours of it at simple scales. The radius
+    shrinks with the number of nonzero components to bound the search.
     """
 
     def matches(candidate: Vec3) -> bool:
-        result = normalized(candidate)
+        result = normalized(candidate, order)
         return (bits(result.x), bits(result.y), bits(result.z)) == (bits(vector.x), bits(vector.y), bits(vector.z))
 
     if matches(vector):
         return vector
-    for scale in (0.5, 2.0, 0.25, 4.0, 0.1, 10.0, 0.2, 5.0, 0.7, 3.0, 0.3, 0.6, 0.9, 1.5, 7.0, 8.0, 9.0):
+    nonzero = sum(1 for c in (vector.x, vector.y, vector.z) if c != 0.0)
+    radius = {0: 0, 1: 96, 2: 40, 3: 6}[nonzero]
+    for scale in (1.0, 0.5, 2.0, 0.25, 4.0, 0.1, 10.0, 0.2, 5.0, 3.0):
         center = Vec3(f32(vector.x * scale), f32(vector.y * scale), f32(vector.z * scale))
-        for x in nearby_singles(center.x, 2):
-            for y in nearby_singles(center.y, 2):
-                for z in nearby_singles(center.z, 2):
+        xs = list(nearby_singles(center.x, radius if center.x != 0.0 else 0))
+        ys = list(nearby_singles(center.y, radius if center.y != 0.0 else 0))
+        zs = list(nearby_singles(center.z, radius if center.z != 0.0 else 0))
+        for x in xs:
+            for y in ys:
+                for z in zs:
                     candidate = Vec3(x, y, z)
                     if matches(candidate):
                         return candidate
-    # A hand-authored direction often has a leading component of exactly 1,
-    # so walk the single-precision neighbours of the other components.
-    if abs(vector.x) >= abs(vector.y) and abs(vector.x) >= abs(vector.z) and vector.x != 0.0:
-        ratio_y, ratio_z = f32(vector.y / vector.x), f32(vector.z / vector.x)
-        for y in nearby_singles(ratio_y, 96 if vector.y != 0.0 else 0):
-            for z in nearby_singles(ratio_z, 96 if vector.z != 0.0 else 0):
-                candidate = Vec3(1.0 if vector.x > 0 else -1.0, y, z)
-                if matches(candidate):
-                    return candidate
     return None
 
 

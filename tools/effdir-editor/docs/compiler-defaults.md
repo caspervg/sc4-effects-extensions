@@ -83,3 +83,14 @@ Constructor-default suppression is intentionally command-oriented rather
 than a whole-record shortcut. If one member changes, the decompiler emits
 the complete source command needed to reproduce that group, including any
 default-looking curve or scalar that the parser would otherwise clear.
+
+## Resource-level compiler behavior
+
+These are consequences of the collection containers rather than of any command:
+
+| Behavior | Source | Effect |
+| --- | --- | --- |
+| Effect child `revision` | `cS3DTransform::operator=` and copy constructor | Starts at 0. Plus one per assignment over an existing slot, reset by reallocation of either vector. |
+| Effect vector capacity | `vector::resize`, doubling from 1 | Growth at indices 1, 2, 4, ... zeroes every child revision and shrinks child vectors to fit. |
+| Effect name map order | SGI/STLport `hash_multimap`, `h = 5*h + c` | Written in bucket iteration order, insertions at the bucket head after any equal key. |
+| Vector normalization | Windows parsers, 24-bit x87 (inferred) | Every step rounds to single, with the squares added in parser order. |

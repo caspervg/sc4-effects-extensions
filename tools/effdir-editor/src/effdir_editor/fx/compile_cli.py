@@ -37,7 +37,7 @@ def main(argv=None) -> int:
         return 2
 
     try:
-        data = compile_to_bytes(source, file=os.path.basename(args.input))
+        data = compile_to_bytes(source, file=os.path.basename(args.input), include_dir=os.path.dirname(os.path.abspath(args.input)))
     except FxError as error:
         print(str(error), file=sys.stderr)
         return 1

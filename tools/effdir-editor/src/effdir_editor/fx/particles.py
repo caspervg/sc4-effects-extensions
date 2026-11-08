@@ -195,7 +195,7 @@ def _fit_direction(bounds: Bounds3):
 
     def forward(center: Vec3, half: Vec3) -> Bounds3:
         if center.x * center.x + center.y * center.y + center.z * center.z > 0.0:
-            center = normalized(center)
+            center = normalized(center, "zyx")
         return Bounds3(
             Vec3(f32(center.x - half.x), f32(center.y - half.y), f32(center.z - half.z)),
             Vec3(f32(center.x + half.x), f32(center.y + half.y), f32(center.z + half.z)),
@@ -206,7 +206,7 @@ def _fit_direction(bounds: Bounds3):
     half = Vec3(f32((mx.x - mn.x) / 2.0), f32((mx.y - mn.y) / 2.0), f32((mx.z - mn.z) / 2.0))
     if forward(center, half) == bounds:
         return center, (half if _nz3(half) else None)
-    unit = fit_unit(center)
+    unit = fit_unit(center, "zyx")
     if unit is not None and forward(unit, half) == bounds:
         return unit, (half if _nz3(half) else None)
     # Stored values passed through a normalize, so search single-precision
@@ -227,7 +227,7 @@ def _fit_direction(bounds: Bounds3):
             for z in nearby_singles(target.z, 2):
                 if forward(Vec3(x, y, z), h) == bounds:
                     return Vec3(x, y, z), (h if _nz3(h) else None)
-    unit = fit_unit(target)
+    unit = fit_unit(target, "zyx")
     if unit is not None and forward(unit, h) == bounds:
         return unit, (h if _nz3(h) else None)
     return None
@@ -474,7 +474,7 @@ def _fit_wind(force: Vec3):
         if m == 0.0:
             continue
         direction = Vec3(f32(force.x / m), f32(force.y / m), f32(force.z / m))
-        unit = normalized(direction)
+        unit = normalized(direction, "zyx")
         if (f32(m * unit.x), f32(m * unit.y), f32(m * unit.z)) == (force.x, force.y, force.z):
             return direction, m
     return None
@@ -517,7 +517,7 @@ def _emit_warp(writer: FxWriter, coverage: Coverage, p: ParticleDescriptor, flag
     if has_alpha:
         curve = fmt_float_curve(p.alpha_warp_curve.items)
         # The parser normalizes the direction before storing it.
-        direction = fit_unit(p.alpha_warp_direction) or p.alpha_warp_direction
+        direction = fit_unit(p.alpha_warp_direction, "xyz") or p.alpha_warp_direction
         parts.append(f"-alpha {fmt_vec3_sample(direction)} {curve}".rstrip())
     if bit(flags2, 8) and not has_uv and not has_alpha:
         parts.append("-wiggleVerts")

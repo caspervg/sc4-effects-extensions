@@ -354,19 +354,13 @@ resource:
 
 | Collection | Records matching |
 | --- | --- |
-| particles | 1190 of 1192 |
-| decals, shakes, lights, dynamic particles | all |
+| particles, decals, shakes, lights, dynamic particles | all |
 | brushes, attractors, scrubbers, sequences, sounds, cameras | all |
-| effect descriptions | 1133 of 1154 |
-| effect name map, effect key map, message triggers | all |
+| effect descriptions, effect name map, effect key map, message triggers | all |
 
-The compiled resource has the same length as vanilla. The only differences:
-
-| Difference | Records | Why it cannot be spelled |
-| --- | ---: | --- |
-| `legacy_transform.revision` on effect children | 62 children in 21 effects | The parser bumps a counter for `-offset`, `-rotate*`, and `-scale`, but vanilla's values do not follow it (823 children have a translation and revision 0, and the non-zero values cluster on whole effects). Compiling with the counter gives far more mismatches, so the field stays zero. No source command writes the observed values. |
-| Velocity box of one particle (record 85) | 1 | Center is one unit in the last place below 1 along Y with a half extent one step below `0.2`. Every parser path normalizes the direction, and an axis-aligned direction normalizes to exactly 1. |
-| `warp -alpha` direction of one particle (record 457) | 1 | The stored unit vector is one normalization step from anything the search of simple inputs reproduces. |
+The compiled resource is byte-identical to vanilla: every collection matches
+and `write_resource` of the compiled model equals the original 1,094,484
+bytes. The two rules below are what closed the last gap.
 
 ### Findings from building the compiler
 
@@ -416,3 +410,62 @@ effect that was defined twice. The decompiler reproduces that with an empty
 orphaned children, followed by the real definition. Both are valid source,
 since the parser keeps one description per name and priority and appends
 anonymous children as it parses.
+
+### Transform `revision` counts assignments
+
+`legacy_transform.revision` is the transform's own byte counter, not a parser
+counter. The parser bumps it on a scratch record, but `vector<cDescriptionRec>`
+push_back copy-constructs into the scratch vector, and the copy constructor
+zeroes it (Mac `cS3DTransform` at `0x0066039A`). Only `cS3DTransform::operator=`
+(`0x0062BA46`) increments it, without copying the source's value, so the byte
+counts assignments since the slot was last constructed.
+
+`AddEffectDescription` assigns over the existing slot when an effect is
+redefined (same name and priority): children below the old size are assigned
+(revision plus one), children past the old size are copy-constructed (zero),
+and a definition with more children than the slot's capacity reallocates and
+zeroes all of them. The effect vector itself doubles when full (capacity 1, 2,
+4, ... 2048), and reallocating it copy-constructs every effect, which zeroes
+every child and shrinks each child vector to fit.
+
+The compiler replays this in `_assign_children` and `_grow_effect_vector`. The
+decompiler reads a nonzero revision as that many redefinitions after the last
+growth of the effect vector (index 1024 for vanilla) and emits ghost
+definitions to get there, with named filler children so no pool gains records.
+Each ghost is a valid `effect` block that the game's parser reads the same way.
+This matches all 62 vanilla children in 21 effects, which all carry a uniform
+value per effect, as equal-sized redefinitions produce.
+
+### Normalization and the x87 state
+
+The Windows parsers normalize a vector with the inverse length times each
+component (`-alpha` `0x0059B680`, `-dir` and `-velocity` `0x0059C280`, `-wind`
+`0x0059A820`). The instruction streams keep the inverse and products in x87
+registers, and the Mac build divides by the length instead. Vanilla values
+fixed which arithmetic is right:
+
+| Particle | Stored value | Model that reaches it |
+| --- | --- | --- |
+| 85 | velocity center Y `0.99999994` | single-precision inverse, for example `-dir "0 1.7 0"` |
+| 457 | alpha direction `0.9238796 0 -0.38268349` | single-precision inverse with squares summed in parser order |
+
+An extended or double inverse and the Mac division reach neither value. The
+CRT sets 53-bit precision (`__setdefaultprecision`), so the parser ran with the
+FPU in 24-bit mode, which is inferred from these records and is the state
+Direct3D setup usually leaves. `float32.normalized` models it: every `fmul`,
+`fadd`, `fsqrt`, and `fdiv` rounds to single, and the squares add in the
+parser's order. This is verified against vanilla and the disassembly, and the
+FPU state itself is inferred.
+
+### `include` and `loadResource`
+
+`cFileParser::DoParseFile` treats `include` and `sinclude` the same way, at the
+line level, before command dispatch, with its own comment state per file and
+paths relative to the including file. A missing file raises `Couldn't open
+file` for both in this build, even though the later ArgScript makes `sinclude`
+silent. The compiler expands both and keeps file and line positions.
+
+`loadResource` is rejected by the compiler. The game merges the loaded
+resource into the collection being saved (`AddToCollection`, `0x003E4120`), and
+a resource stores no pool names, so compiling it would copy the other resource
+into the output and still not let source text reference its particles.

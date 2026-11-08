@@ -84,7 +84,9 @@ This compiles `input.fx` and writes it as `EA5118B0-EA5118B1-<instance>`, the
 same shape as a small plugin EFFDIR entry. If `out.dat` already exists, the
 entry is added or replaced and every other entry of the package is kept. The
 `--compress` switch stores the entry QFS-compressed. Bad input is reported as
-`file:line: message` and the command exits with status 1.
+`file:line: message` and the command exits with status 1. `include` and
+`sinclude` lines are resolved relative to the including file, and compiling
+the decompiled vanilla `EFFDIR` reproduces all 1,094,484 bytes.
 
 From Python, `effdir_editor.fx.compile_source(text, file="x.fx")` returns the
 `EffDirResource`, and `compile_to_bytes` returns the packed bytes.

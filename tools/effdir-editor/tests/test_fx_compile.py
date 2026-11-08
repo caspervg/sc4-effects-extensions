@@ -16,6 +16,7 @@ from effdir_editor.fx.compile_cli import main as compile_main
 from effdir_editor.fx.compiler import compile_source, compile_to_bytes
 from effdir_editor.fx.parser import FxError, evaluate, parse_file
 from effdir_editor.model.resource import read_resource, write_resource
+from effdir_editor.wire import make_raw_u32
 
 VANILLA = r"C:\Program Files (x86)\GOG Galaxy\Games\SimCity 4 Deluxe Edition\SimCity_1.dat"
 VANILLA_TGI = Tgi(0xEA5118B0, 0xEA5118B1, 0x00000001)
@@ -153,6 +154,69 @@ def test_macro_errors_have_positions():
         compile_source('define d "a"\n  decal %b\n  end\nenddef\ncreate d "1"\n', file="m.fx")
 
 
+def _child_revisions(resource, index):
+    return [d.legacy_transform.revision.value for d in resource.effect_descriptions.items[index].descriptions.items]
+
+
+def test_redefinition_counts_assignments_in_the_transform_revision():
+    # cS3DTransform::operator= adds one, its copy constructor zeroes (Mac
+    # 0x0062BA46, 0x0066039A), and a redefinition assigns over the old
+    # children. The parser's own operation counter never reaches the file.
+    once = "particles p\nend\neffect e\n    particleEffect p -offset \"1 0 0\" -scale 2\nend\n"
+    assert _child_revisions(compile_source(once), 0) == [0]
+    twice = once + "effect e\n    particleEffect p\nend\n"
+    assert _child_revisions(compile_source(twice), 0) == [1]
+    thrice = twice + "effect e\n    particleEffect p\nend\n"
+    assert _child_revisions(compile_source(thrice), 0) == [2]
+    # Growing past the old child count reallocates, so nothing was assigned.
+    grown = "particles p\nend\neffect e\n    particleEffect p\nend\neffect e\n    particleEffect p\n    particleEffect p\nend\n"
+    assert _child_revisions(compile_source(grown), 0) == [0, 0]
+
+
+def test_effect_vector_growth_zeroes_child_revisions():
+    # Effect vector capacity doubles from 1, so adding index 2 reallocates and
+    # copy-constructs every earlier child.
+    source = "particles p\nend\neffect a\n    particleEffect p\nend\neffect a\n    particleEffect p\nend\n"
+    assert _child_revisions(compile_source(source), 0) == [1]
+    grown = source + "effect b\nend\neffect c\nend\n"
+    assert _child_revisions(compile_source(grown), 0) == [0]
+
+
+def test_revision_round_trips_through_ghost_definitions():
+    source = "particles p\nend\neffect a\n    particleEffect p\nend\neffect a\n    particleEffect p\nend\neffect b\n    particleEffect p\nend\n"
+    resource = compile_source(source)
+    assert _child_revisions(resource, 0) == [0]  # adding b doubled the vector and zeroed it
+    resource.effect_descriptions.items[1].descriptions.items[0].legacy_transform.revision = make_raw_u32(1)
+    text = emit_resource(resource).text
+    assert text.count("effect b") == 2
+    assert _child_revisions(compile_source(text), 1) == [1]
+
+
+def test_normalization_rounds_every_step_in_single_precision():
+    # Reached by a 24-bit x87 and not by a double-precision inverse: vanilla
+    # particle 85 stores this center, which a `-dir` of 1.7 produces.
+    from effdir_editor.fx.float32 import normalized
+    from effdir_editor.wire import Vec3
+
+    assert normalized(Vec3(0.0, 1.7000000476837158, 0.0), "zyx").y == 0.9999999403953552
+
+
+def test_include_expands_files_and_reports_their_positions(tmp_path):
+    (tmp_path / "defs.fx").write_text("#<\nnote\n#>\nparticles p\n    life 1\nend\n", encoding="utf-8")
+    source = 'include "defs.fx"\neffect e\n    particleEffect p\nend\n'
+    resource = compile_source(source, file="main.fx", include_dir=str(tmp_path))
+    assert len(resource.particles.items) == 1
+    assert len(resource.effect_descriptions.items) == 1
+
+    (tmp_path / "bad.fx").write_text("particles q\n    bogus 1\nend\n", encoding="utf-8")
+    with pytest.raises(FxError, match=r"bad\.fx:2: .*Unknown command 'bogus'"):
+        compile_source("sinclude bad.fx\n", file="main.fx", include_dir=str(tmp_path))
+    with pytest.raises(FxError, match=r"main\.fx:1: Couldn't open file 'gone.fx'"):
+        compile_source("include gone.fx\n", file="main.fx", include_dir=str(tmp_path))
+    with pytest.raises(FxError, match=r'"include" takes a single argument'):
+        compile_source("include a b\n", file="main.fx", include_dir=str(tmp_path))
+
+
 def test_redefining_an_effect_keeps_its_record_and_name_map_entry():
     source = """
 effect a
@@ -252,13 +316,5 @@ def test_vanilla_round_trip():
         diff = [i for i, (a, b) in enumerate(zip(_record_bytes(expected, writer), _record_bytes(actual, writer))) if a != b]
         if diff:
             mismatches[name] = diff
-    # The two remaining classes are documented in docs/decompiler-semantics.md:
-    # 21 effects differ only in the unknown `revision` word of child transforms,
-    # 2 particles have no exact parser spelling for one stored vector.
-    assert sorted(mismatches) == ["effect_descriptions", "particles"]
-    assert len(mismatches["effect_descriptions"]) == 21
-    assert len(mismatches["particles"]) == 2
-
-    assert len(write_resource(compiled)) == len(data)
-    # Same byte count, and outside the classified records the bytes agree.
-    assert sum(1 for a, b in zip(write_resource(compiled), data) if a != b) == 66
+    assert mismatches == {}
+    assert write_resource(compiled) == data
