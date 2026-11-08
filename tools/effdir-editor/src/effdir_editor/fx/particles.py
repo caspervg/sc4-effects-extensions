@@ -302,8 +302,11 @@ def _emit_source(writer: FxWriter, coverage: Coverage, p: ParticleDescriptor, fl
     if bit(flags0, 13) or bit(flags0, 12):
         keyword = "-cityWindySide" if bit(flags0, 13) else "-city"
         low, high = bounds.minimum.y, bounds.maximum.y
-        ranged = f"{keyword} {fmt_num(low)} {fmt_num(high)}" if (low, high) != (0.0, 0.0) else keyword
-        keywords.append((ranged, flat_y))
+        if (low, high) != (0.0, 0.0):
+            keywords.append((f"{keyword} {fmt_num(low)} {fmt_num(high)}", flat_y))
+        else:
+            # Bare `-city` stores +0.0, so a -0.0 from a shape needs its own line.
+            keywords.append((keyword, _SOURCE_COMMAND_DEFAULT_BOUNDS))
     if bit(flags0, 6):
         keywords.append(("-model", _SOURCE_COMMAND_DEFAULT_BOUNDS))
     if bit(flags0, 7):
@@ -366,7 +369,12 @@ def _shape_candidates(bounds: Bounds3):
     """Source-shape spellings for stored bounds. `-box` covers every centered
     shape including the `-0.0` a negated half leaves, `-point` stores plain
     zeros, and an explicit center runs the parser's translation, which
-    turns a `-0.0` into `+0.0`."""
+    turns a `-0.0` into `+0.0` unless that center component is `-0` too."""
+
+    def center_of(low: float, high: float) -> float:
+        if low == 0.0 == high and bits(low) != bits(0.0):
+            return -0.0
+        return f32((high + low) / 2.0)
 
     half = Vec3(
         f32((bounds.maximum.x - bounds.minimum.x) / 2.0),
@@ -374,9 +382,9 @@ def _shape_candidates(bounds: Bounds3):
         f32((bounds.maximum.z - bounds.minimum.z) / 2.0),
     )
     center = Vec3(
-        f32((bounds.maximum.x + bounds.minimum.x) / 2.0),
-        f32((bounds.maximum.y + bounds.minimum.y) / 2.0),
-        f32((bounds.maximum.z + bounds.minimum.z) / 2.0),
+        center_of(bounds.minimum.x, bounds.maximum.x),
+        center_of(bounds.minimum.y, bounds.maximum.y),
+        center_of(bounds.minimum.z, bounds.maximum.z),
     )
     box = f"-box {fmt_vec3_sample(half)}"
     if not _nz3(center):

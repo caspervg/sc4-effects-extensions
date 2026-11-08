@@ -8,14 +8,16 @@ from __future__ import annotations
 
 import dataclasses
 import os
+import struct
 
 import pytest
 
 from effdir_editor.container.dbpf import DbpfArchive, Tgi
-from effdir_editor.fx import LEGACY_TOOL, emit_resource
+from effdir_editor.fx import LEGACY_TOOL, MATLAB_2012, emit_resource
 from effdir_editor.fx.compile_cli import main as compile_main
 from effdir_editor.fx.compiler import compile_source, compile_to_bytes
 from effdir_editor.fx.parser import FxError, evaluate, parse_file
+from effdir_editor.fx.profiles import matlab_scrubber_header
 from effdir_editor.model.resource import read_resource, write_resource
 from effdir_editor.wire import make_raw_u32
 
@@ -301,6 +303,28 @@ def test_legacy_profile_binds_repeated_names_in_definition_order():
     resource = compile_source(source, profile=LEGACY_TOOL)
     assert len(resource.particles.items) == 2
     assert [d.description_index.value for d in resource.effect_descriptions.items[0].descriptions.items] == [0, 1]
+
+
+def test_matlab_profile_writes_the_third_scrubber_field_twice():
+    # The header of the same scrubber before and after the script's writer.
+    intact = bytes.fromhex("010001000000000000000400000002130000000000000000")
+    written = bytes.fromhex("01000100000000c004000000000000130000000000000000")
+    assert matlab_scrubber_header(intact) == written
+    assert matlab_scrubber_header(written) == written
+
+    source = "effect e\n    gameEffect -demolish 4\nend\n"
+    assert compile_source(source, profile=LEGACY_TOOL).components.scrubbers.items[0].demolish.value == 4
+    assert compile_source(source, profile=MATLAB_2012).components.scrubbers.items[0].demolish.value == 0
+
+
+def test_source_spellings_keep_negative_zero_minimum():
+    source = 'particles a\n    source -city\n    source -box "1 0 1"\nend\nparticles b\n    source -box "0.005 0 0" "-0.005 -0 0"\nend\n'
+    for particle in compile_source(source, profile=LEGACY_TOOL).particles.items:
+        assert struct.pack("<f", particle.source_bounds.minimum.y) == struct.pack("<f", -0.0)
+    city = compile_source(source, profile=LEGACY_TOOL)
+    text = emit_resource(city, profile=LEGACY_TOOL).text
+    recompiled = compile_source(text, profile=LEGACY_TOOL)
+    assert write_resource(recompiled) == write_resource(city)
 
 
 def test_cli_profile_option(tmp_path):

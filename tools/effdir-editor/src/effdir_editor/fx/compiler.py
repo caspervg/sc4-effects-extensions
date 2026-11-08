@@ -28,6 +28,8 @@ from ..model.components import (
     default_scrubber,
     default_sequence,
     default_sound,
+    read_scrubber,
+    write_scrubber,
 )
 from ..model.decal import DecalDescriptor, default_decal
 from ..model.dynamic_particle import DynamicParticleDescriptor, default_dynamic_particle
@@ -36,10 +38,10 @@ from ..model.light import LightDescriptor, default_light
 from ..model.particle import ParticleDescriptor, default_particle
 from ..model.resource import EffDirResource, TrailingFloatMetadata, default_resource
 from ..model.shake import ShakeDescriptor, default_shake
-from ..wire import Bounds3, Vec2, Vec3, WireString, WireVector, make_raw_f32, make_raw_u8, make_raw_u16, make_raw_u32
+from ..wire import Bounds3, ReadCursor, Vec2, Vec3, WireString, WireVector, WriteCursor, make_raw_f32, make_raw_u8, make_raw_u16, make_raw_u32
 from .float32 import f32, normalized as _normalized, rotate as _rotate
 from .parser import Command, FxError, evaluate, expand_includes, parse_file
-from .profiles import GAME, LEGACY_CAMERA_VALUES, CompilerProfile
+from .profiles import GAME, LEGACY_CAMERA_VALUES, CompilerProfile, matlab_scrubber_header
 
 _PARTICLE_DRAW = {"decal": 0, "decalInvertDepth": 1, "decalIgnoreDepth": 2, "depthDecal": 3, "depthDecalMasked": 4, "additive": 5, "additiveIgnoreDepth": 6, "modulate": 7}
 _DECAL_DRAW = {"decal": 0, "additive": 1, "modulate": 2, "decalInvertDepth": 3, "decalNoOverlap": 4}
@@ -309,6 +311,12 @@ class FxCompiler:
             entries.sort(key=lambda entry: entry[1])
         resource.effect_name_map = _vector(StringU32Pair(name=WireString.from_text(name), target=make_raw_u32(target)) for name, target in entries)
         self._apply_camera_fill(resource)
+        if self.profile.repeat_scrubber_header:
+            scrubbers = resource.components.scrubbers
+            for index, scrubber in enumerate(scrubbers.items):
+                writer = WriteCursor()
+                write_scrubber(writer, scrubber)
+                scrubbers.items[index] = read_scrubber(ReadCursor(matlab_scrubber_header(writer.getvalue())))
         resource.effect_key_map = _vector(self.key_map)
         resource.message_triggers = _vector(self.triggers)
         return resource

@@ -477,9 +477,11 @@ entries in 152 packages, the `game` profile reproduces none byte for byte and
 the `legacy-tool` profile reproduces 8981. The files were not written by the
 game's parser, and the differences are general behaviour of whatever wrote
 them, so they live in `fx/profiles.py` behind an explicit `--profile` option.
-The tool itself is unidentified. Its output shows MSVC debug fills (`0xCC`
+Two lineages show up. 8,949 entries store `0xCD` in the camera flag, from a
+tool that is still unidentified. Its output shows MSVC debug fills (`0xCC`
 stack words in `startMessage`, a `0xCD` heap byte in the camera flag), which
-points to a debug build.
+points to a debug build. The other 52 store vanilla's exact camera block, the
+block Xannepan's Matlab scripts copy from their input.
 
 | Behaviour | Evidence | Profile field |
 | --- | --- | --- |
@@ -488,28 +490,64 @@ points to a debug build.
 | Direction vectors kept as written | `-alpha "0.9239 0 -0.3827"` stores those digits, and velocity boxes such as `2..4` have a non-unit center | `normalize_vectors` |
 | Parsed decimals in `-dir` arithmetic | `0.3` and `0.1` store exactly `0.2` and `0.4`, which single-precision arithmetic cannot do | `unrounded_direction_bounds` |
 | `-vary` above 1, `-lod` in a `select`, `-prob` outside a `select`, and `visualEffect` to another resource | The game's parser rejects each, and the files store them | `check_ranges`, `check_select_lod`, `allow_prob_outside_select`, `allow_external_effects` |
-| Repeated pool names append, with the k-th reference using the k-th definition | One effect uses `sheep_walk` at two indices, and 18,609 of 18,641 children fit | `append_named_pools` |
+| Repeated pool names append, with the k-th reference using the k-th definition | `IsolateEff.m` copies a new record per child with no merging. Every pool with a repeated name is in the vanilla-camera lineage, where 140 of 157 children fit | `append_named_pools` |
 | Transform `revision` is not counted | Every non-vanilla child stores 0 | `track_revision` |
 
-The binding rule is the weakest entry. It is an observed fit, and 32 children
-do not follow it.
+`IsolateEff.m` isolates one effect, so the step that joins its outputs into a
+multi-effect file is not in the published scripts. That part of the binding
+rule is inferred.
+
+#### Xannepan's Matlab scripts
+
+`ReadEffDir.m`, `WriteEffDir.m`, and `IsolateEff.m` were posted by Xannepan in
+SC4Devotion topic 14724, reply 49, on 9 November 2012, for Matlab R2011a. He
+said later that he had found errors in this version, and the JENX releases may
+have used a newer one.
+
+- The writer is a field-by-field dump of the reader. Both have 305 fields in
+  the same order with the same types, so the scripts add nothing of their own.
+- `sec135` is the camera block. `IsolateEff.m` copies it, along with `init` and
+  the section end bytes, so `0xCD` is inherited when it is present. Vanilla
+  stores `1`, so no vanilla input carries it.
+- `sec(7)` reads the first 22 bytes of a scrubber as `u1a, u1b, u1b` with
+  `ubit58`. The third read replaces the second and the writer stores it twice.
+  That overwrites `value_10`, `demolish`, and the low bits of `action`, and
+  clears the top two bits of `min_size`. Applying this to the 0x1027 scrubber
+  gives the 0x1029 scrubber byte for byte, so `value_10 = 311296` is this bug.
+  The other six scrubbers in the JENX release do not show the damage, so it
+  is the separate `matlab-2012` profile.
+- Child flag 2 in `IsolateEff.m` reuses the previous `sec_nr`, and 431 of the
+  448 flag-2 children come first in their effect, where that variable is
+  undefined. The other 17 would have a nonzero key, and all 448 store 0. The
+  published script did not write these children.
+- Flag `0x10` is tested as decimal `case 10`, and no non-vanilla child uses
+  that flag. Flag 3 maps to section 4, but the brush layout is section 5.
+  `sec(8).u1` is also assigned twice, and no non-vanilla file has a sequence.
+  None of these reach a stored difference.
 
 Remaining differences under `legacy-tool`, 20 entries:
 
 | Cause | Entries | Status |
 | --- | ---: | --- |
-| Children share one anonymous brush or sound record | 4 | The game's parser always appends a new record, so no valid spelling exists |
-| Child names that do not match their pool's name | 6 | Several names resolve to one index, with no rule that explains it. Identical-record merging was tried and is contradicted |
-| Values stored behind a cleared enable bit (`bounce`, `terrainRepel`) | 7 | No command writes the value without setting the bit |
-| Repeated-name binding that the k-th rule misses | 3 | Copies of one resource, where effects reuse earlier definitions |
-| `source_bounds` minimum Y of `-0.0` with a positive maximum | 7 | No shape produces this sign |
-| Name map order of one resource (3 copies) | 3 | The only multi-name resource not in record order |
-| `scrubber value_10` and `brush marker` | 2 | Unknown fields with no source spelling, likely uninitialized memory |
+| Children share one anonymous brush or sound record | 4 | The game's parser always appends a new record, so no valid spelling exists. `IsolateEff.m` also gives each child its own record, so it does not explain this |
+| Child names that do not match their pool's name | 6 | `IsolateEff.m` copies a child's name and only rewrites its key, so a mismatch needs a separate edit. Identical-record merging was tried and is contradicted |
+| Values stored behind a cleared enable bit (`bounce`, `terrainRepel`) | 7 | No command writes the value without setting the bit. The scripts store flags and values independently. The first two particles of 0x3aa18104 are vanilla records 1167 and 1168 with only `flags_0` changed, from `0x100` to `0x8000` |
+| Repeated-name binding that the k-th rule misses | 3 | Copies of one resource, where effects reuse earlier definitions. Per-child append cannot do that |
+| `source_bounds` minimum Y of `-0.0` with a positive maximum | 2 | No shape or script path produces this sign, so a direct field edit is inferred |
+| `source_bounds` minimum Y that `-box` translation rounds differently | 1 | `0.3 - 0.1` stored as exactly `0.2` |
+| Name map order of one resource (3 copies) | 3 | The only multi-name resource not in record order, not touched by the scripts |
+| `scrubber value_10` | 1 | Reproduced by `matlab-2012`, which makes this entry byte identical |
+| `brush marker` of 257 | 1 | Five brushes in one resource. The scripts copy these bytes unchanged, so an edit outside them is inferred |
 
 An entry can fall under several causes.
 
 These findings also corrected general rules, used by every profile:
 
+- Bare `source -city` stores `+0.0`, so `-city` with a stored `-0.0` minimum
+  now gets its own line before a `-box` that stores the sign.
+- A `-box` center keeps a `-0` component, because `-0 + -0` is the only sum
+  that stays negative. The game reading `-0` as negative zero is inferred from
+  the unary minus in Andrew Willmott's argscript.
 - `size`, `-screw`, and `-prob` multiply the parsed value directly in the
   Windows parsers (`0x005998E0`, `0x0059A820`, `0x005989D0`), before any store
   rounds it, so `size 16.8` stores exactly `840`.

@@ -104,6 +104,11 @@ packs. Its fields are listed in `fx/profiles.py`, with the evidence in
 `decompiler-semantics.md`. Pass the same profile to `emit_resource` so the
 decompiler picks spellings for it.
 
+`matlab-2012` is `legacy-tool` plus the scrubber damage of the `WriteEffDir.m`
+that Xannepan posted to SC4Devotion in 2012 (topic 14724, reply 49). Use it
+only for a file that went through that writer, since it rewrites every
+scrubber, and most third-party scrubbers do not show the damage.
+
 `size`, `-screw`, and `-prob` in every profile multiply the unrounded parsed
 value, then round the stored result.
 
