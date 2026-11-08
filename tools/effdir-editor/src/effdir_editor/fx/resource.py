@@ -17,6 +17,7 @@ record order.
 from __future__ import annotations
 
 from collections import OrderedDict
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
 
 from ..model.resource import EffDirResource
@@ -24,11 +25,13 @@ from .coverage import Coverage, FxEmitResult, note_non_finite_floats
 from .decals import decal_asset_ids, emit_decal
 from .dynamic_particles import dynamic_particle_asset_ids, emit_dynamic_particle
 from .effects import emit_effect, emit_effect_alias
+from .inline_components import automata_effect_lines, brush_effect_lines, camera_effect_lines, scrubber_effect_lines, sound_effect_lines
 from .lights import emit_light
 from .names import ResolvedNames, resolve_names
 from .particles import emit_particles, particle_asset_ids
 from .sequences import emit_sequence
 from .shakes import emit_shake
+from .defaults import EFFECT_DEFAULT
 from .writer import FxWriter, fmt_asset_name, fmt_hex, fmt_num, quote_name
 
 _HEADER = (
@@ -44,28 +47,33 @@ def _emit_inline_resource_ids(
     resource: EffDirResource,
     names: ResolvedNames,
     effect_indices: List[int],
+    extra: Tuple[Tuple[int, int], ...] = (),
 ) -> None:
     """Declare the numeric lookup tables required by brush/sound children."""
 
     emitted = set()
+
+    def declare(component_type: int, index: int) -> None:
+        if component_type == 3 and 0 <= index < len(resource.components.brushes.items):
+            key = resource.components.brushes.items[index].key.value
+            keyword = "brushID"
+        elif component_type == 7 and 0 <= index < len(resource.components.sounds.items):
+            key = resource.components.sounds.items[index].resource_key.value
+            keyword = "soundID"
+        else:
+            return
+        identity = (keyword, key)
+        if identity in emitted:
+            return
+        emitted.add(identity)
+        writer.line(f"{keyword} {quote_name(names.name_for(component_type, index))} {fmt_hex(key)}")
+        coverage.emitted()
+
     for effect_index in effect_indices:
         for description in resource.effect_descriptions.items[effect_index].descriptions.items:
-            component_type = description.component_type.value
-            index = description.description_index.value
-            if component_type == 3 and 0 <= index < len(resource.components.brushes.items):
-                key = resource.components.brushes.items[index].key.value
-                keyword = "brushID"
-            elif component_type == 7 and 0 <= index < len(resource.components.sounds.items):
-                key = resource.components.sounds.items[index].resource_key.value
-                keyword = "soundID"
-            else:
-                continue
-            identity = (keyword, key)
-            if identity in emitted:
-                continue
-            emitted.add(identity)
-            writer.line(f"{keyword} {quote_name(names.name_for(component_type, index))} {fmt_hex(key)}")
-            coverage.emitted()
+            declare(description.component_type.value, description.description_index.value)
+    for component_type, index in extra:
+        declare(component_type, index)
     if emitted:
         writer.blank()
 
@@ -134,23 +142,13 @@ def _emit_camera_params(writer: FxWriter, coverage: Coverage, resource: EffDirRe
     zooms = list(values[:count])
     parallax_base, parallax_range, size, side_swipe = values[count:]
 
-    # cameraParams takes exactly one positional zoom value, which the
-    # parser expands into five by repeated halving (compiler-defaults.md).
-    # There is no syntax for supplying the five stored values
-    # independently, so anything that is not that exact expansion pattern
-    # cannot be reproduced -- emitting them as extra positional arguments
-    # would either fail to parse or silently re-expand from just the
-    # first value, producing different zoom levels on recompile.
-    if len(zooms) == 1:
-        source_zooms = zooms
-    elif len(zooms) == 5 and all(zooms[i] == zooms[0] * (0.5 ** i) for i in range(5)):
+    # `camera` takes any number of positional zoom values, and a single one is
+    # expanded to five by repeated halving (cCameraParamsCommand, Mac
+    # 0x0078600E), so use that shorter form only when it reproduces them.
+    if len(zooms) == 5 and all(zooms[i] == zooms[0] * (0.5 ** i) for i in range(5)):
         source_zooms = zooms[:1]
     else:
-        coverage.skipped(
-            f"{path}.values",
-            f"stored zoom vector {zooms!r} is not the single-value halving expansion cameraParams can reproduce; omitted entirely",
-        )
-        return
+        source_zooms = zooms
 
     # The command token is `camera`, not the class name: RegisterCommands
     # (Mac `0x00402931`) registers cCameraParamsCommand under "camera".
@@ -210,12 +208,20 @@ def _emit_effects(writer: FxWriter, coverage: Coverage, resource: EffDirResource
     # (docs/reference/effect-children/visual-effect.md), so raw record
     # order is not safe to emit directly -- an effect referencing a later
     # one via visualEffect would come before its own dependency exists.
-    all_indices = list(range(len(resource.effect_descriptions.items)))
-    order, _pools = _effect_reference_order(resource, all_indices, coverage, unresolved_note_path=None)
-    for effect_index in order:
+    plan = _effect_emission_plan(resource, coverage)
+    deferred_after: Dict[int, List[int]] = {}
+    for real, predecessor in plan.deferred.items():
+        deferred_after.setdefault(predecessor, []).append(real)
+
+    def primary_name(effect_index: int) -> str:
+        aliases = [a for a in names.effect_names.get(effect_index, []) if a]
+        return aliases[0] if aliases else f"effect_{effect_index}"
+
+    def emit_real(effect_index: int) -> None:
+        if effect_index in plan.orphans:
+            _emit_ghost(writer, coverage, resource, names, effect_index, primary_name(effect_index), plan.orphans[effect_index])
         effect = resource.effect_descriptions.items[effect_index]
-        aliases = names.effect_names.get(effect_index, [])
-        aliases = [a for a in aliases if a] or [f"effect_{effect_index}"]
+        aliases = [a for a in names.effect_names.get(effect_index, []) if a] or [f"effect_{effect_index}"]
         primary, *extra = aliases
         note_non_finite_floats(effect, f"effect_descriptions[{effect_index}]", coverage)
         emit_effect(writer, coverage, resource, names, effect_index, effect, primary)
@@ -229,6 +235,18 @@ def _emit_effects(writer: FxWriter, coverage: Coverage, resource: EffDirResource
                 f"effect calling visualEffect {primary!r} rather than a duplicate full definition",
             )
             writer.blank()
+
+    def flush(after: int) -> None:
+        for real in deferred_after.get(after, []):
+            emit_real(real)
+            flush(real)
+
+    for effect_index in range(len(resource.effect_descriptions.items)):
+        if effect_index in plan.deferred:
+            _emit_ghost(writer, coverage, resource, names, effect_index, primary_name(effect_index), [])
+        else:
+            emit_real(effect_index)
+        flush(effect_index)
 
 
 def _emit_bindings(writer: FxWriter, resource: EffDirResource) -> None:
@@ -254,6 +272,170 @@ def _emit_bindings(writer: FxWriter, resource: EffDirResource) -> None:
 
     for trigger in resource.message_triggers.items:
         writer.line(f"messageTrigger {fmt_hex(trigger.message_id.value)} {quote_name(trigger.effect_name.decoded or '')}")
+
+
+_ANON_POOLS = ((3, "brushes"), (4, "attractors"), (5, "scrubbers"), (7, "sounds"), (8, "cameras"))
+
+
+@dataclass
+class _EmissionPlan:
+    """How record order maps to source order.
+
+    Stored order is parser order, with three recoverable exceptions, all
+    from an effect that was defined twice with the same name and priority:
+
+    - `deferred` maps an effect to the effect its real definition must
+      follow. Its index comes from an earlier definition (emitted as an
+      empty *ghost* at its record position), while its anonymous children
+      and its `visualEffect` targets were created later.
+    - `orphans` maps an effect to anonymous pool records nothing references,
+      each `(component_type, pool_index)`. The first definition of a
+      redefined effect created them, then the second replaced it, so a
+      ghost right before the real definition recreates them at the right
+      pool position.
+    """
+
+    deferred: Dict[int, int] = field(default_factory=dict)
+    orphans: Dict[int, List[Tuple[int, int]]] = field(default_factory=dict)
+
+
+def _effect_emission_plan(resource: EffDirResource, coverage: Coverage) -> _EmissionPlan:
+    plan = _EmissionPlan()
+    effects = resource.effect_descriptions.items
+    count = len(effects)
+    by_name = _effect_indices_by_name(resource)
+    owner: Dict[Tuple[int, int], int] = {}
+    for effect_index, effect in enumerate(effects):
+        for d in effect.descriptions.items:
+            owner[(d.component_type.value, d.description_index.value)] = effect_index
+
+    def pool_order(component_type: int) -> List[Tuple[int, int]]:
+        pool = [(idx, ei) for (t, idx), ei in owner.items() if t == component_type]
+        pool.sort()
+        return pool
+
+    predecessors: Dict[int, int] = {}
+    for component_type, _attr in _ANON_POOLS:
+        pool = pool_order(component_type)
+        # Scanning in pool order, every effect must appear in record order, so
+        # an effect placed earlier by record order than something with a
+        # smaller pool index was really defined after that something.
+        for position, (pool_index, effect_index) in enumerate(pool):
+            later_smaller = [ei for _, ei in pool[:position] if ei > effect_index]
+            if later_smaller:
+                predecessors[effect_index] = max(predecessors.get(effect_index, 0), max(later_smaller))
+
+    for effect_index, effect in enumerate(effects):
+        for description in effect.descriptions.items:
+            if description.component_type.value != 2:
+                continue
+            targets = by_name.get((description.name.decoded or "").casefold(), [])
+            targets = [t for t in targets if 0 <= t < count]
+            first = min(targets, default=None)
+            if first is not None and first > effect_index:
+                predecessors[effect_index] = max(predecessors.get(effect_index, 0), first)
+
+    plan.deferred = predecessors
+
+    for component_type, attribute in _ANON_POOLS:
+        total = len(getattr(resource.components, attribute).items)
+        referenced = sorted(idx for (t, idx) in owner if t == component_type)
+        for orphan in sorted(set(range(total)) - set(referenced)):
+            nexts = [idx for idx in referenced if idx > orphan]
+            if not nexts:
+                coverage.note(f"components.{attribute}[{orphan}]", "unsupported", "unreferenced pool record with no later record to anchor a ghost definition, so it is dropped")
+                continue
+            host = owner[(component_type, nexts[0])]
+            plan.orphans.setdefault(host, []).append((component_type, orphan))
+    return plan
+
+
+def _emit_ghost(
+    writer: FxWriter,
+    coverage: Coverage,
+    resource: EffDirResource,
+    names: ResolvedNames,
+    effect_index: int,
+    name: str,
+    orphans: List[Tuple[int, int]],
+) -> None:
+    """An effect body that a later definition of the same name and priority
+    replaces: it fixes this name's record index (an empty ghost) or
+    recreates unreferenced anonymous pool records (a ghost with children)."""
+
+    effect = resource.effect_descriptions.items[effect_index]
+    header = f"effect {quote_name(name)}"
+    if effect.priority.value != EFFECT_DEFAULT.priority.value:
+        header += f" -priority {int(effect.priority.value)}"
+    writer.begin(header)
+    for component_type, index in sorted(orphans):
+        lines = _anonymous_lines(resource, names, component_type, index, coverage)
+        if lines:
+            writer.multiline_command(lines)
+    writer.end()
+    writer.blank()
+
+
+def _anonymous_lines(resource: EffDirResource, names: ResolvedNames, component_type: int, index: int, coverage: Coverage) -> List[str]:
+    components = resource.components
+    path = f"components[{component_type}][{index}]"
+    if component_type == 3:
+        return brush_effect_lines(names.name_for(3, index), components.brushes.items[index], coverage=coverage, path=path)
+    if component_type == 4:
+        record = components.attractors.items[index]
+        return automata_effect_lines(record.name.decoded or "", record, coverage=coverage, path=path)
+    if component_type == 5:
+        return scrubber_effect_lines(components.scrubbers.items[index], coverage=coverage, path=path) or ["scrubberEffect", "-noFlora"]
+    if component_type == 7:
+        return sound_effect_lines(names.name_for(7, index), components.sounds.items[index], coverage=coverage, path=path)
+    if component_type == 8:
+        return camera_effect_lines(components.cameras.items[index], coverage=coverage, path=path) or ["cameraEffect"]
+    return []
+
+
+def _visual_effect_order(resource: EffDirResource, coverage: Coverage) -> List[int]:
+    """Stored record order, moved only as far as `visualEffect` requires.
+
+    Stored order is the order the game's parser saw, which matters for the
+    byte-level layout. Only a `visualEffect` child must name an effect
+    defined earlier (`Unknown visual effect` otherwise), so that is the
+    only edge imposed here, and a name-based `timedEffect`, `chainEffect`, or
+    `play` reference may legitimately point forward.
+    """
+
+    by_name = _effect_indices_by_name(resource)
+    order: List[int] = []
+    visited: Set[int] = set()
+    on_stack: Set[int] = set()
+
+    def visit(index: int) -> None:
+        if index in visited:
+            return
+        on_stack.add(index)
+        for description in resource.effect_descriptions.items[index].descriptions.items:
+            if description.component_type.value != 2:
+                continue
+            # The parser only asks whether the name exists yet, so the
+            # earliest definition of a name satisfies every reference to it.
+            targets = [t for t in by_name.get((description.name.decoded or "").casefold(), []) if 0 <= t < len(resource.effect_descriptions.items)]
+            target = min(targets, default=None)
+            if target is None or target <= index:
+                continue
+            if target in on_stack:
+                coverage.note(
+                    f"effect_descriptions[{index}]",
+                    "info",
+                    f"effect_descriptions[{target}] and this effect reference each other through visualEffect, so the stored order was kept",
+                )
+            elif target not in visited:
+                visit(target)
+        on_stack.discard(index)
+        visited.add(index)
+        order.append(index)
+
+    for index in range(len(resource.effect_descriptions.items)):
+        visit(index)
+    return order
 
 
 PREVIEWABLE_COLLECTIONS = frozenset(
@@ -346,7 +528,10 @@ def emit_resource(resource: EffDirResource) -> FxEmitResult:
 
     names = resolve_names(resource, coverage)
     effect_indices = list(range(len(resource.effect_descriptions.items)))
-    _emit_inline_resource_ids(writer, coverage, resource, names, effect_indices)
+    orphan_ids = tuple(
+        pair for pairs in _effect_emission_plan(resource, Coverage()).orphans.values() for pair in pairs
+    )
+    _emit_inline_resource_ids(writer, coverage, resource, names, effect_indices, orphan_ids)
     _emit_asset_ids(writer, resource, _all_pools(resource))
     _emit_camera_params(writer, coverage, resource)
     _emit_pools(writer, coverage, resource, names)

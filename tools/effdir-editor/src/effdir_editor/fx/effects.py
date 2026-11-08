@@ -13,17 +13,20 @@ table) into `shakeEffect`/`flashEffect`/`tintEffect`
 from __future__ import annotations
 
 import math
+import struct
 from typing import List
 
 from ..editor.references import COMPONENT_COLLECTIONS
 from ..model.common import ReadProfile
-from ..model.effect import DescriptionRecord, EffectDescription
+from ..model.effect import DescriptionRecord, EffectDescription, Matrix3
 from ..model.resource import EffDirResource
 from .bits import bit
 from .coverage import Coverage
 from .defaults import EFFECT_DEFAULT, UNINITIALIZED_U32
+from .float32 import bits, f32, rotate, shortest_decimal
 from .inline_components import automata_effect_lines, brush_effect_lines, camera_effect_lines, scrubber_effect_lines, sound_effect_lines
 from .names import ResolvedNames
+from ..wire import Vec3
 from .writer import FxWriter, fmt_hex, fmt_num, fmt_vec3_sample, quote_name
 
 _TOP_LEVEL_FLAG_SWITCHES = [
@@ -53,8 +56,46 @@ def _matrix_is_identity(matrix) -> bool:
     return rows == _IDENTITY_ROWS
 
 
-def _matrix_to_xyz_degrees(matrix):
-    """Invert the parser's ``Rx(x) * Ry(y) * Rz(z)`` construction.
+def _single_axis_turns(matrix):
+    """A parser `-rotateX/-rotateY/-rotateZ` value reproducing the matrix
+    exactly, or None. Single-axis spellings are what source files use and
+    keep the signed zeros a composed `-rotateXYZ` would change."""
+
+    identity = lambda: Matrix3(Vec3(1.0, 0.0, 0.0), Vec3(0.0, 1.0, 0.0), Vec3(0.0, 0.0, 1.0))
+
+    def rebuilt(axis, turns):
+        built = identity()
+        rotate(built, axis, turns)
+        return built
+
+    r = (matrix.row_0, matrix.row_1, matrix.row_2)
+    candidates = (
+        ("x", math.atan2(r[2].y, r[1].y)),
+        ("y", math.atan2(r[0].z, r[0].x)),
+        ("z", math.atan2(r[1].x, r[0].x)),
+    )
+    for axis, radians in candidates:
+        turns = radians / (2.0 * math.pi)
+        for value in (turns, turns + 1.0, turns - 1.0):
+            for precision in (2, 3, 4, 5, 6, 7, 8, 9):
+                candidate = round(value, precision)
+                if _matrix_bits(rebuilt(axis, candidate)) == _matrix_bits(matrix):
+                    return axis, candidate
+    return None
+
+
+def _matrix_bits(matrix):
+    return tuple(
+        bits(v)
+        for row in (matrix.row_0, matrix.row_1, matrix.row_2)
+        for v in (row.x, row.y, row.z)
+    )
+
+
+def _matrix_to_xyz_turns(matrix):
+    """Invert the parser's ``Rx(x) * Ry(y) * Rz(z)`` construction, in turns.
+    The shared child parser multiplies its arguments by 2*pi (Mac
+    ``0x00401D2C``), so source angles are fractions of a full turn.
 
     Euler angles are not unique, so choose the conventional branch with
     Y in [-90, 90] and Z=0 at gimbal lock.  Rebuilding the matrix keeps us
@@ -93,7 +134,27 @@ def _matrix_to_xyz_degrees(matrix):
     )
     if any(abs(actual - expected) > 1e-4 for row, expected_row in zip(rows, rebuilt) for actual, expected in zip(row, expected_row)):
         return None
-    return tuple(math.degrees(angle) for angle in (x, y, z))
+    turns = (x / (2.0 * math.pi), y / (2.0 * math.pi), z / (2.0 * math.pi))
+    return _exact_turns(matrix, turns)
+
+
+def _exact_turns(matrix, turns):
+    """Prefer the shortest turn values that rebuild the stored matrix exactly,
+    so a parser-produced matrix survives recompilation bit for bit."""
+
+    identity = lambda: Matrix3(Vec3(1.0, 0.0, 0.0), Vec3(0.0, 1.0, 0.0), Vec3(0.0, 0.0, 1.0))
+
+    def rebuild(values):
+        built = identity()
+        for axis, value in zip("xyz", values):
+            rotate(built, axis, value)
+        return built
+
+    for precision in (3, 4, 5, 6, 7, 8, 9):
+        candidate = tuple(round(t, precision) for t in turns)
+        if rebuild(candidate) == matrix:
+            return candidate
+    return turns
 
 
 def _shared_child_options(
@@ -103,6 +164,8 @@ def _shared_child_options(
     in_select: bool,
     coverage: Coverage,
     path: str,
+    default_ignore_length: bool = False,
+    probability: int | None = None,
 ) -> List[str]:
     opts: List[str] = []
     t = d.legacy_transform
@@ -115,8 +178,11 @@ def _shared_child_options(
     if t.scale != 1.0:
         opts.append(f"-scale {fmt_num(t.scale)}")
     if not _matrix_is_identity(t.matrix):
-        angles = _matrix_to_xyz_degrees(t.matrix)
-        if angles is None:
+        single = _single_axis_turns(t.matrix)
+        angles = None if single is not None else _matrix_to_xyz_turns(t.matrix)
+        if single is not None:
+            opts.append(f"-rotate{single[0].upper()} {fmt_num(single[1])}")
+        elif angles is None:
             coverage.note(
                 f"{path}.legacy_transform.matrix",
                 "unsupported",
@@ -144,11 +210,14 @@ def _shared_child_options(
         opts.append(f"-emitScale {fmt_num(d.emit_scale_min.value)} {fmt_num(d.emit_scale_max.value)}")
     if d.size_scale_min.value != 1.0 or d.size_scale_max.value != 1.0:
         opts.append(f"-sizeScale {fmt_num(d.size_scale_min.value)} {fmt_num(d.size_scale_max.value)}")
-    if bit(d.flags.value, 0):
-        opts.append("-ignoreLength")
+    if bit(d.flags.value, 0) != default_ignore_length:
+        # Anonymous children start with this bit set from their kind
+        # (cSC4EffectsParser::AddAnonDescription, Mac 0x004025C8).
+        opts.append("-ignoreLength" if bit(d.flags.value, 0) else "-respectLength")
+    stored_probability = d.probability.value if probability is None else probability
     if d.probability.value != 0:
         if in_select:
-            opts.append(f"-prob {fmt_num(d.probability.value / 65535.0)}")
+            opts.append(f"-prob {_fmt_probability(stored_probability)}")
         else:
             coverage.note(
                 f"{path}.probability",
@@ -168,12 +237,13 @@ def _emit_description_record(
     d: DescriptionRecord,
     *,
     in_select: bool,
+    probability: int | None = None,
 ) -> None:
     path = f"effect_descriptions[{effect_index}].descriptions[{description_index}]"
     component_type = d.component_type.value
 
     if component_type == 2:
-        shared = _shared_child_options(d, allow_shells=False, in_select=in_select, coverage=coverage, path=path)
+        shared = _shared_child_options(d, allow_shells=False, in_select=in_select, coverage=coverage, path=path, probability=probability)
         writer.line(f"visualEffect {quote_name(d.name.decoded or '')}" + "".join(f" {o}" for o in shared))
         coverage.emitted()
         return
@@ -194,6 +264,8 @@ def _emit_description_record(
         in_select=in_select,
         coverage=coverage,
         path=path,
+        default_ignore_length=_default_ignore_length(resource, component_type, index),
+        probability=probability,
     )
 
     if component_type == 0:
@@ -246,6 +318,26 @@ def _emit_description_record(
             coverage.skipped(path, "cameraEffect had no nonzero fields; emitted as a bare command so its transform is not lost")
 
 
+def _default_ignore_length(resource: EffDirResource, component_type: int, index: int) -> bool:
+    """The ignoreLength bit a child starts with before its options."""
+
+    if component_type in (4, 5, 8):
+        return True
+    if component_type == 7:
+        return resource.components.sounds.items[index].length.value == 0.0
+    return False
+
+
+def _fmt_probability(stored: int) -> str:
+    """`-prob p`: the shortest text that rounds to this 16-bit value."""
+
+    def check(parsed: float) -> bool:
+        biased = f32(f32(parsed * 65535.0) + 12582912.0)
+        return (struct.unpack("<I", struct.pack("<f", biased))[0] - 0x4B400000) & 0xFFFF == stored
+
+    return shortest_decimal(stored / 65535.0, check=check)
+
+
 def _emit_child_range(
     writer: FxWriter,
     coverage: Coverage,
@@ -264,8 +356,13 @@ def _emit_child_range(
             while j < stop and items[j].selection_group.value == group:
                 j += 1
             writer.begin("select")
+            # cGroupSelectCommand::EndBlock adds ~count to the last child's
+            # probability (Mac 0x0077DA24), so the last child's text has to
+            # be the value before that adjustment, all children explicit.
+            count = j - i
             for k in range(i, j):
-                _emit_description_record(writer, coverage, resource, names, effect_index, k, items[k], in_select=True)
+                probability = None if k != j - 1 else (items[k].probability.value + count + 1) & 0xFFFF
+                _emit_description_record(writer, coverage, resource, names, effect_index, k, items[k], in_select=True, probability=probability)
             writer.end()
             i = j
         else:
@@ -344,7 +441,9 @@ def emit_effect(
     flags = effect.flags.value
     for bit_n, keyword in _TOP_LEVEL_FLAG_SWITCHES:
         if bit(flags, bit_n):
-            switches.append(keyword)
+            # A flag switch, spelled with a dash like every other switch
+            # (cGroupEffectCommand::Parse, Mac 0x0078510A).
+            switches.append(f"-{keyword}")
     if effect.priority.value != EFFECT_DEFAULT.priority.value:
         if 1 <= effect.priority.value <= 5:
             switches.append(f"-priority {int(effect.priority.value)}")

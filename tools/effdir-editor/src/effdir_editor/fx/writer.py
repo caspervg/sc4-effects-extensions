@@ -29,6 +29,7 @@ import textwrap
 from typing import Iterable, List, Sequence
 
 from ..wire import Vec2, Vec3
+from .float32 import bits, f32, shortest_decimal
 
 _COMMENT_WRAP_WIDTH = 100
 
@@ -43,10 +44,8 @@ def is_emittable_float(value: float) -> bool:
 
 
 def fmt_num(value: float) -> str:
-    """Render a float the way a human would type it, not the way struct
-    unpacked it. `round(..., 6)` absorbs float32-round-trip noise (e.g.
-    ``0.30000001192092896``) without inventing precision the wire value
-    never had.
+    """Shortest decimal that reads back as exactly this single-precision
+    value, so the source compiles to the same bits (`float32.shortest_decimal`).
 
     Non-finite input degrades to ``0`` so a single corrupt float cannot
     abort a whole export, but it is the caller's job to have checked
@@ -62,13 +61,15 @@ def fmt_num(value: float) -> str:
         raise TypeError(f"fmt_num expects a plain float, got {type(value).__name__}; pass `.value` for a Raw wrapper")
     if not math.isfinite(value):
         return "0"
-    rounded = round(float(value), 6)
-    if rounded == 0.0:
-        rounded = 0.0  # normalize -0.0
-    if rounded == int(rounded) and abs(rounded) < 1e15:
-        return str(int(rounded))
-    text = f"{rounded:.6f}".rstrip("0").rstrip(".")
-    return text if text not in ("", "-") else "0"
+    return shortest_decimal(float(value))
+
+
+def fmt_scaled(value: float, factor: float) -> str:
+    """Decimal for a parser that stores `f32(text) * factor`: the shortest
+    text whose stored product is exactly `value` (`size` uses 50, `-screw`
+    uses the double-precision constant 0.02)."""
+
+    return shortest_decimal(value / factor, check=lambda parsed: bits(f32(parsed * factor)) == bits(value))
 
 
 def fmt_int(value: int) -> str:

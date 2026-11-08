@@ -58,12 +58,15 @@ These values apply only when the command itself is present:
 
 | Command | Parser default |
 | --- | --- |
-| `collision` | bounce `0.3`; therefore an active collision with bounce `0.3` omits `-bounce` |
+| `collide` | bounce `0.3`, so an active collision with bounce `0.3` omits `-bounce` |
 | `color -vary` | exactly one grouped `Vec3`; each component must be in `0..1` |
 | `source` | before switches, initializes a flat box `-1 0 -1` through `1 0 1`; this differs from the descriptor constructor's cube |
 | `model` | sets draw mode `depthDecal` (`3`) before parsing shared draw options |
+| `life` | an omitted `-preroll` stores the base value, and `base [vary]` stores base minus and plus vary |
+| `shake` | length `5`, fade `1`, aspect `1`, amplitude `[1]`, frequency `[60]`, table `random`, set when the block opens |
+| `light` | an empty strength curve becomes `[1]` and an empty color curve becomes `kColorBlue` when the block closes |
 | `scrubberEffect` action | low-byte demolition effect ID `1`; `-explode` instead defaults it to `2` and sets upper action bits `0x1300` |
-| `cameraParams` | `-parallax 100 101`; `-size 4`; `-sideSwipe 7`; one positional zoom value expands to five values by repeated halving |
+| `camera` | `-parallax 100 101`, `-size 4`, `-sideSwipe 7`, and one positional zoom value expands to five values by repeated halving |
 
 For effect-child LOD, the stored range byte is the exclusive upper bound:
 `-lod n` writes `n, n+1`, while `-lodRange min max` writes `min, max+1`.

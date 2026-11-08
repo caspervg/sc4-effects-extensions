@@ -24,7 +24,7 @@ from effdir_editor.wire import Vec2, Vec3, WireString, WireVector, make_raw_bits
 def test_fmt_num_strips_float32_noise_and_trailing_zeros():
     assert fmt_num(0.30000001192092896) == "0.3"
     assert fmt_num(2.0) == "2"
-    assert fmt_num(-0.0) == "0"
+    assert fmt_num(-0.0) == "-0"  # the parser accepts it and a stored -0.0 must survive
     assert fmt_num(1.5) == "1.5"
 
 
@@ -221,7 +221,8 @@ def test_particle_random_walk_and_terrain_repel():
     )
     result = emit_resource(_resource_with_one_particle(p))
     assert "randomWalk" in result.text
-    assert "-delay 0.1 0.2" in result.text
+    # randomWalk -delay is base plus variation: stored 0.1..0.2 is 0.15 +/- 0.05.
+    assert "-delay 0.15 0.05" in result.text
     assert "-wait" in result.text
     assert "terrainRepel 1 2" in result.text
 
@@ -388,7 +389,7 @@ def test_effect_top_level_switches_and_priority():
     r.effect_descriptions.items.append(eff)
     r.effect_name_map.items.append(StringU32Pair(name=WireString.from_text("E"), target=make_raw_u32(0)))
     result = emit_resource(r)
-    assert "effect E viewRelative rigid -priority 2" in result.text
+    assert "effect E -viewRelative -rigid -priority 2" in result.text
 
 
 def test_effect_version1_profile_omits_start_message():
@@ -475,7 +476,9 @@ def test_select_probability_and_system_sequence_are_reconstructed():
     result = emit_resource(r)
 
     assert "particleSequence\n        select" in result.text
-    assert "particleEffect p -prob 0.500008" in result.text
+    # The last select child is spelled before the parser's adjustment
+    # (stored 32768 plus the explicit count plus one, here 32770).
+    assert "particleEffect p -prob 0.50004" in result.text
     assert not [n for n in result.coverage.notes if "probability" in n.path or "systemSequence" in n.message]
 
 
@@ -504,7 +507,7 @@ def test_lod_pair_and_parser_rotation_matrix_are_inverted():
     result = emit_resource(r)
 
     assert "-lodRange 2 4" in result.text
-    assert "-rotateXYZ 0 0 90" in result.text
+    assert "-rotateXYZ 0 0 0.25" in result.text
     assert not [n for n in result.coverage.notes if "legacy_transform.matrix" in n.path or "lod_range" in n.path]
 
 
@@ -816,7 +819,8 @@ def test_maintain_mode_still_emits_initial_motion_options():
     )
     result = emit_resource(_resource_with_one_particle(p))
     assert "maintain 5" in result.text
-    assert "-speed 10 20" in result.text
+    # -speed is base plus variation: stored 10..20 is 15 +/- 5.
+    assert "-speed 15 5" in result.text
 
 
 def test_unknown_particle_fields_are_reported():
@@ -870,7 +874,7 @@ def test_particle_draw_and_alignment_domains_are_emitted():
 def test_force_vector_is_reproduced_as_normalized_wind():
     p = dataclasses.replace(default_particle(), force=Vec3(0.0, -9.8, 0.0))
     result = emit_resource(_resource_with_one_particle(p))
-    assert '-wind "0 -1 0" 9.8' in result.text
+    assert "-gravity 9.8" in result.text
 
 
 def test_source_dice_and_model_speed_use_distinct_adjacent_fields():
@@ -943,7 +947,8 @@ def test_tractor_wiggle_and_timed_effect_emit_without_crashing():
     )
     result = emit_resource(_resource_with_one_particle(p))
     assert '-tractor "0 0 0" "1 0 0" 0.5' in result.text
-    assert '-wiggleDir 0.4 "0 1 0"' in result.text
+    # -wiggleDir stores its first vector in `uv` and its second in `direction`.
+    assert '-wiggleDir 0.4 "0 0 0" "0 1 0"' in result.text
     assert "timedEffect child 1.5" in result.text
 
 
@@ -1084,7 +1089,8 @@ def test_emit_resource_orders_visual_effect_target_before_referencing_effect():
     )
 
     text = emit_resource(r).text
-    assert text.index("effect B") < text.index("effect A")
+    ghost, b, body = text.index("effect A"), text.index("effect B"), text.rindex("effect A")
+    assert ghost < b < body and "visualEffect B" in text[body:]
 
 
 def test_transitive_closure_reports_unbreakable_cycle_as_forward_reference_note():
@@ -1290,12 +1296,10 @@ def test_camera_params_non_expandable_zoom_vector_is_reported_not_misspelled():
         values=(100.0, 50.0, 77.0, 12.0, 3.0, 100.0, 1.0, 4.0, 7.0),
     )
     result = emit_resource(r)
-    # Previously emitted `camera 100 50 77 12 3`, five positional zoom
-    # values, even though the command only accepts one (the parser expands
-    # it to five by halving) -- a value that would either fail to parse or
-    # silently re-expand into the wrong zoom levels on recompile.
-    assert "camera" not in result.text
-    assert any("trailing_float_metadata" in n.path and "not the single-value" in n.message for n in result.coverage.notes)
+    # The parser reads every positional zoom value and only expands the
+    # single-value case, so non-halving lists are simply written out.
+    assert "camera 100 50 77 12 3" in result.text
+    assert not [n for n in result.coverage.notes if "trailing_float_metadata" in n.path]
 
 
 def test_camera_params_single_value_expansion_still_works():
@@ -1315,7 +1319,7 @@ def test_camera_params_single_value_expansion_still_works():
 def test_matrix_rotation_round_trip_including_gimbal_lock():
     import math
 
-    from effdir_editor.fx.effects import _matrix_to_xyz_degrees
+    from effdir_editor.fx.effects import _matrix_to_xyz_turns
     from effdir_editor.model.effect import Matrix3
 
     def make_matrix(xd, yd, zd):
@@ -1329,8 +1333,9 @@ def test_matrix_rotation_round_trip_including_gimbal_lock():
         return Matrix3(row_0=Vec3(*rows[0]), row_1=Vec3(*rows[1]), row_2=Vec3(*rows[2]))
 
     for angles in [(30, 20, 10), (0, 90, 0), (45, 0, 0), (0, 0, 45), (170, 80, -170), (0, 0, 0)]:
-        recovered = _matrix_to_xyz_degrees(make_matrix(*angles))
+        recovered = _matrix_to_xyz_turns(make_matrix(*angles))
         assert recovered is not None
+        recovered = tuple(turns * 360.0 for turns in recovered)
         # Re-build from the recovered angles and confirm it reproduces the
         # same matrix (gimbal lock can give a different but equivalent
         # angle triple, so compare matrices, not angles).

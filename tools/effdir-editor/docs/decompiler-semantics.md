@@ -275,7 +275,8 @@ the base and endpoint, so it is reconstructed as `base, base + range`.
 ## Effect-child rotations
 
 The shared child parser accepts `-rotateX`, `-rotateY`, `-rotateZ`,
-`-rotateXYZ`, and `-rotateZXY`, converts degrees to radians, and applies the
+`-rotateXYZ`, and `-rotateZXY`, multiplies each angle by 2*pi (so angles are
+fractions of a full turn, not degrees), and applies the
 matrix rotations in command order. The matrix methods at `0x00660230`,
 `0x0062D1F6`, and `0x0065FF22` post-multiply, so `-rotateXYZ x y z` stores
 `Rx(x) * Ry(y) * Rz(z)`.
@@ -331,7 +332,7 @@ so the decompiler ignores this provenance field without a coverage warning.
 
 Source and collision `-killOutsideCity` set the same particle flag bit 11.
 The decompiler emits it once on the canonical `source` command; repeating it in
-`collision` would not preserve any additional state or behavior.
+`collide` would not preserve any additional state or behavior.
 
 ## Coverage-note policy
 
@@ -343,3 +344,75 @@ documented canonicalization choices, not decompilation gaps, and no longer
 produce per-record coverage messages. Coverage is reserved for stored state the
 emitted source cannot reproduce, invalid enum domains, and genuinely unknown
 runtime fields.
+
+## Compiling `.fx` back to `EFFDIR`
+
+The compiler (`fx/parser.py`, `fx/compiler.py`) mirrors the game's command
+parsers. Its acceptance test decompiles vanilla `SimCity_1.dat`, compiles the
+text, and compares every collection. The result, on the 1,094,484-byte vanilla
+resource:
+
+| Collection | Records matching |
+| --- | --- |
+| particles | 1190 of 1192 |
+| decals, shakes, lights, dynamic particles | all |
+| brushes, attractors, scrubbers, sequences, sounds, cameras | all |
+| effect descriptions | 1133 of 1154 |
+| effect name map, effect key map, message triggers | all |
+
+The compiled resource has the same length as vanilla. The only differences:
+
+| Difference | Records | Why it cannot be spelled |
+| --- | ---: | --- |
+| `legacy_transform.revision` on effect children | 62 children in 21 effects | The parser bumps a counter for `-offset`, `-rotate*`, and `-scale`, but vanilla's values do not follow it (823 children have a translation and revision 0, and the non-zero values cluster on whole effects). Compiling with the counter gives far more mismatches, so the field stays zero. No source command writes the observed values. |
+| Velocity box of one particle (record 85) | 1 | Center is one unit in the last place below 1 along Y with a half extent one step below `0.2`. Every parser path normalizes the direction, and an axis-aligned direction normalizes to exactly 1. |
+| `warp -alpha` direction of one particle (record 457) | 1 | The stored unit vector is one normalization step from anything the search of simple inputs reproduces. |
+
+### Findings from building the compiler
+
+These corrections come from comparing the compiled output with vanilla and
+from the Mac `cSC4EffectsParser` parsers:
+
+- Particle collision is registered as `collide`, not `collision`.
+- Effect flags are switches (`effect e -viewRelative`), and `life` is
+  `base [vary]`, with an omitted `-preroll` storing the base.
+- `-speed`, `randomWalk -delay`, and `randomWalk -strength` store base minus
+  and plus variation. `-turn`, `-delay` on `emit`, and `-trigger` store their
+  two values directly.
+- `force -screw` and `warp -screw` both store the value times the double
+  constant `0.02`, and `force -gravity g` stores `(0, -g, 0)` exactly.
+- Only one `-tractor` or `-wiggle` is read per command, so each point needs
+  its own line. `-wiggleDir amount a b` stores `a` in the second record vector
+  and `b` in the first.
+- `-rotateX`, `-rotateY`, `-rotateZ`, and `-rotateXYZ` take fractions of a
+  turn, multiplied by 2*pi by the parser. They are not degrees.
+- `maintain` accepts only `-delay`. The other timing switches live on `emit`.
+- `source -model`, `-city`, and the other shape switches are an else-if chain,
+  so a line can only name one. Two model bits need two `source` commands.
+- `camera` takes any number of positional zooms. One value expands to five by
+  halving, and more than one is stored as given.
+- Particle `effectBase` writes the field earlier named `terrain_name`.
+- `cSC4EffectsCollection` stores effects in an SGI `hash_multimap` keyed on
+  the lowercased name, so the on-disk name map order is that table's iteration
+  order: hash `h = 5*h + c`, initial buckets from `next_prime(100)`, prime
+  growth, inserts at the bucket head (after an equal key), and growth reverses
+  chains. This reproduces all 1154 vanilla entries. Name-map order in
+  third-party resources such as NAM's differs and is harmless to the reader.
+- Shake and light parser defaults differ from their constructors. The shake
+  block starts at length `5`, fade `1`, aspect `1`, amplitude `[1]`, and
+  frequency `[60]`. An empty light strength or color falls back to `[1]`
+  and `kColorBlue`.
+- A `select` block adds `~n` to its last child's probability, where `n` is the
+  number of explicit children. It counts instead of summing, so vanilla's
+  probabilities in a select do not total `65535`.
+- Anonymous children start with `ignoreLength` set for attractor, scrubber,
+  and camera children, and for sound children with zero length. `-respectLength`
+  clears it.
+
+A record that nothing references (an orphaned sound, scrubber, or camera) and
+an effect whose children were created after a later record both come from an
+effect that was defined twice. The decompiler reproduces that with an empty
+*ghost* `effect` block at the record's position, or a ghost carrying the
+orphaned children, followed by the real definition. Both are valid source,
+since the parser keeps one description per name and priority and appends
+anonymous children as it parses.

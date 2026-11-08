@@ -14,14 +14,15 @@ throughout `docs/reference/binary/effdir.md` itself
 from __future__ import annotations
 
 import math
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 from ..model.particle import ParticleDescriptor
 from ..wire import Bounds3, Vec2, Vec3
+from .float32 import bits, f32, fit_base_vary, fit_unit, nearby_singles, normalized
 from .bits import bit
 from .coverage import Coverage
 from .defaults import PARTICLE_DEFAULT
-from .writer import FxWriter, fmt_asset_name, fmt_color_curve, fmt_float_curve, fmt_hex, fmt_num, fmt_vec2_pair, fmt_vec2_sample, fmt_vec3_sample, quote_name
+from .writer import FxWriter, fmt_asset_name, fmt_color_curve, fmt_float_curve, fmt_hex, fmt_num, fmt_scaled, fmt_vec2_pair, fmt_vec2_sample, fmt_vec3_sample, quote_name
 
 
 _PARTICLE_DRAW_TYPES = {
@@ -84,8 +85,6 @@ def _report_unrepresentable(coverage: Coverage, p: ParticleDescriptor, path: str
     no authored information.
     """
 
-    # `terrain_name` is compiler lineage/name metadata. The flattened
-    # descriptor above preserves behavior, and no runtime consumer is known.
     if p.value_164.value != 0:
         coverage.skipped(f"{path}.value_164", f"unknown field holds {int(p.value_164.value)}; no fx spelling to emit")
     if p.value_166.value != 1:
@@ -101,91 +100,141 @@ def _report_unrepresentable(coverage: Coverage, p: ParticleDescriptor, path: str
 
 def _emit_life(writer: FxWriter, coverage: Coverage, p: ParticleDescriptor, path: str) -> None:
     if p.life != PARTICLE_DEFAULT.life or p.preroll.value != PARTICLE_DEFAULT.preroll.value:
-        line = f"life {fmt_vec2_pair(p.life)}"
-        if p.preroll.value != 0.0:
+        # `life base [vary]` stores base-vary and base+vary, and an omitted
+        # -preroll stores the base value (cParticleLifeCommand, Mac 0x0077E104).
+        base, vary, exact = fit_base_vary(p.life.x, p.life.y)
+        if not exact:
+            coverage.note(f"{path}.life", "unsupported", "stored life bounds have no exact base-plus-variation spelling, the nearest was emitted")
+        line = f"life {fmt_num(base)}"
+        if vary != 0.0:
+            line += f" {fmt_num(vary)}"
+        if p.preroll.value != base:
             line += f" -preroll {fmt_num(p.preroll.value)}"
         writer.line(line)
-        coverage.emitted()
-    else:
-        coverage.emitted()  # nothing to emit and nothing lost -- both zero
+    coverage.emitted()
 
 
 def _emit_emission(writer: FxWriter, coverage: Coverage, p: ParticleDescriptor, flags0: int, path: str) -> None:
     has_curve = p.emit_curve.items != PARTICLE_DEFAULT.emit_curve.items
     is_maintain = bit(flags0, 2)
     is_inject = bit(flags0, 1)
-    shared = _emission_shared_options(p, flags0)
-    has_motion = (
-        p.emit_velocity_bounds != PARTICLE_DEFAULT.emit_velocity_bounds
-        or p.emit_speed != PARTICLE_DEFAULT.emit_speed
-        or bit(flags0, 5)
-    )
-    if not (has_curve or is_maintain or is_inject or shared or has_motion):
-        coverage.emitted()
-        return
+    timing = _emission_shared_options(p, flags0)
 
+    # Everything but -delay is emit-only: `maintain` takes no other switch
+    # (cParticleMaintainCommand, Mac 0x00785E28), so the shared options ride
+    # on a separate `emit` line.
+    value = p.emit_curve.items[0] if p.emit_curve.items else 0.0
     if is_maintain:
-        value = p.emit_curve.items[0] if p.emit_curve.items else 0.0
         if is_inject:
             writer.line(f"emit -inject {fmt_num(value)}")
-        writer.line(f"maintain {fmt_num(value)}{shared}")
+        line = f"maintain {fmt_num(value)}"
+        if p.emit_delay != PARTICLE_DEFAULT.emit_delay:
+            line += f" -delay {fmt_vec2_pair(p.emit_delay)}"
+        writer.line(line)
+        timing = [t for t in timing if not t.startswith("-delay ")]
         if len(p.emit_curve.items) > 1:
             coverage.note(
                 f"{path}.emit_curve",
                 "info",
-                f"maintain takes a single value but {len(p.emit_curve.items)} curve samples are stored; "
-                "only the first was emitted",
+                f"maintain takes a single value but {len(p.emit_curve.items)} curve samples are stored, only the first was emitted",
             )
-        coverage.emitted()
-    elif has_curve or is_inject:
-        if is_inject:
-            value = p.emit_curve.items[0] if p.emit_curve.items else 0.0
-            writer.line(f"emit -inject {fmt_num(value)}{shared}")
-            if len(p.emit_curve.items) > 1:
-                coverage.note(
-                    f"{path}.emit_curve",
-                    "unsupported",
-                    f"inject mode stores one value but {len(p.emit_curve.items)} curve samples are present; only the first can be emitted",
-                )
-        else:
-            writer.line(f"emit -rate {fmt_float_curve(p.emit_curve.items)}{shared}")
-        coverage.emitted()
-    elif shared:
-        writer.line("emit" + shared)
-        coverage.emitted()
+        rate_parts: List[str] = []
+    elif is_inject:
+        rate_parts = [f"-inject {fmt_num(value)}"]
+        if len(p.emit_curve.items) > 1:
+            coverage.note(
+                f"{path}.emit_curve",
+                "unsupported",
+                f"inject mode stores one value but {len(p.emit_curve.items)} curve samples are present, only the first can be emitted",
+            )
+    elif has_curve:
+        rate_parts = [f"-rate {fmt_float_curve(p.emit_curve.items)}"]
+    else:
+        rate_parts = []
 
-    # Initial-motion options live on `emit` regardless of whether the rate
-    # itself was spelled `emit`/`inject`/`rate` or `maintain`; emitting
-    # them unconditionally keeps a maintain-mode particle's velocity and
-    # speed from being dropped (they are stored in the same descriptor).
-    motion = []
-    if p.emit_velocity_bounds != PARTICLE_DEFAULT.emit_velocity_bounds:
-        # `-velocity` takes ONE argument -- a single quoted direction that
-        # `nSCRes::ParseVector3` reads out of that one string (emit parser,
-        # Mac `0x00786ac1`), which the parser stores as both ends of the
-        # bounds. Two bare vec3s were six separate tokens the parser would
-        # read as a malformed direction plus stray speed/vary arguments.
-        motion.append(f"-velocity {fmt_vec3_sample(p.emit_velocity_bounds.minimum)}")
-        if p.emit_velocity_bounds.minimum != p.emit_velocity_bounds.maximum:
+    motion = _emission_motion(coverage, p, flags0, path)
+    if rate_parts or timing or motion:
+        writer.line(" ".join(["emit", *rate_parts, *timing, *motion]))
+    coverage.emitted()
+
+
+def _emission_motion(coverage: Coverage, p: ParticleDescriptor, flags0: int, path: str) -> List[str]:
+    """Velocity and speed. `-dir` writes the bounds and leaves speed alone,
+    so it can carry the stored box exactly, while `-velocity` also rewrites
+    speed (cParticleEmitCommand, Mac 0x0078667C)."""
+
+    parts: List[str] = []
+    bounds = p.emit_velocity_bounds
+    if bounds != PARTICLE_DEFAULT.emit_velocity_bounds:
+        spelling = _fit_direction(bounds)
+        if spelling is None:
             coverage.note(
                 f"{path}.emit_velocity_bounds",
                 "unsupported",
-                "stored velocity bounds have different minimum and maximum, but `-velocity` writes one "
-                "direction to both ends; only the minimum was emitted",
+                f"velocity bounds {bounds!r} have no `-dir` spelling that reproduces them exactly, "
+                "the nearest spelling was emitted",
             )
+            center = Vec3((bounds.minimum.x + bounds.maximum.x) / 2, (bounds.minimum.y + bounds.maximum.y) / 2, (bounds.minimum.z + bounds.maximum.z) / 2)
+            half = Vec3((bounds.maximum.x - bounds.minimum.x) / 2, (bounds.maximum.y - bounds.minimum.y) / 2, (bounds.maximum.z - bounds.minimum.z) / 2)
+            spelling = (center, half if _nz3(half) else None)
+        center, half = spelling
+        parts.append(f"-dir {fmt_vec3_sample(center)}" + (f" {fmt_vec3_sample(half)}" if half is not None else ""))
     if p.emit_speed != PARTICLE_DEFAULT.emit_speed:
-        motion.append(f"-speed {fmt_num(p.emit_speed.x)} {fmt_num(p.emit_speed.y)}")
+        base, vary, exact = fit_base_vary(p.emit_speed.x, p.emit_speed.y)
+        if not exact:
+            coverage.note(f"{path}.emit_speed", "unsupported", "stored speed range has no exact base-plus-variation spelling, the nearest was emitted")
+        parts.append(f"-speed {fmt_num(base)}" + (f" {fmt_num(vary)}" if vary != 0.0 else ""))
     if bit(flags0, 5):
-        motion.append("-base")
-    if motion:
-        writer.line("emit " + " ".join(motion))
-        coverage.emitted()
-    else:
-        coverage.emitted()
+        parts.append("-base")
+    return parts
 
 
-def _emission_shared_options(p: ParticleDescriptor, flags0: int) -> str:
-    parts = []
+def _fit_direction(bounds: Bounds3):
+    """`-dir center [half]`: the parser normalizes center (when nonzero) and
+    stores center minus and plus half. Returns exact singles or None."""
+
+    def forward(center: Vec3, half: Vec3) -> Bounds3:
+        if center.x * center.x + center.y * center.y + center.z * center.z > 0.0:
+            center = normalized(center)
+        return Bounds3(
+            Vec3(f32(center.x - half.x), f32(center.y - half.y), f32(center.z - half.z)),
+            Vec3(f32(center.x + half.x), f32(center.y + half.y), f32(center.z + half.z)),
+        )
+
+    mn, mx = bounds.minimum, bounds.maximum
+    center = Vec3(f32((mn.x + mx.x) / 2.0), f32((mn.y + mx.y) / 2.0), f32((mn.z + mx.z) / 2.0))
+    half = Vec3(f32((mx.x - mn.x) / 2.0), f32((mx.y - mn.y) / 2.0), f32((mx.z - mn.z) / 2.0))
+    if forward(center, half) == bounds:
+        return center, (half if _nz3(half) else None)
+    unit = fit_unit(center)
+    if unit is not None and forward(unit, half) == bounds:
+        return unit, (half if _nz3(half) else None)
+    # Stored values passed through a normalize, so search single-precision
+    # neighbours of the implied center and half (axis-independent).
+    def axis(cv, hv, lo, hi):
+        for c in nearby_singles(cv, 8):
+            for h in nearby_singles(hv, 8):
+                if f32(c - h) == lo and f32(c + h) == hi:
+                    return c, h
+        return None
+    fitted = [axis(center.x, half.x, mn.x, mx.x), axis(center.y, half.y, mn.y, mx.y), axis(center.z, half.z, mn.z, mx.z)]
+    if not all(fitted):
+        return None
+    h = Vec3(fitted[0][1], fitted[1][1], fitted[2][1])
+    target = Vec3(fitted[0][0], fitted[1][0], fitted[2][0])
+    for x in nearby_singles(target.x, 2):
+        for y in nearby_singles(target.y, 2):
+            for z in nearby_singles(target.z, 2):
+                if forward(Vec3(x, y, z), h) == bounds:
+                    return Vec3(x, y, z), (h if _nz3(h) else None)
+    unit = fit_unit(target)
+    if unit is not None and forward(unit, h) == bounds:
+        return unit, (h if _nz3(h) else None)
+    return None
+
+
+def _emission_shared_options(p: ParticleDescriptor, flags0: int) -> List[str]:
+    parts: List[str] = []
     if p.emit_loop_count.value == 1 and p.emit_loop_interval.value != 0.0:
         parts.append(f"-single {fmt_num(p.emit_loop_interval.value)}")
     elif (
@@ -205,7 +254,7 @@ def _emission_shared_options(p: ParticleDescriptor, flags0: int) -> str:
         parts.append(f"-delay {fmt_vec2_pair(p.emit_delay)}")
     if p.emit_trigger != PARTICLE_DEFAULT.emit_trigger:
         parts.append(f"-trigger {fmt_vec2_pair(p.emit_trigger)}")
-    return (" " + " ".join(parts)) if parts else ""
+    return parts
 
 
 def _emit_source(writer: FxWriter, coverage: Coverage, p: ParticleDescriptor, flags0: int, flags2: int, path: str) -> None:
@@ -219,21 +268,35 @@ def _emit_source(writer: FxWriter, coverage: Coverage, p: ParticleDescriptor, fl
         coverage.emitted()
         return
 
+    # The shape switches are an else-if chain (cParticleSourceCommand, Mac
+    # 0x0077F0D6): -dice, -model, -modelBase, -city and -cityWindySide each
+    # exclude a box, so the line can carry only one of them.
+    shape: List[str] = []
     if has_dice:
-        writer.line(f"source -dice {fmt_num(p.model_speed.value)}")
-        if bounds == _ZERO_BOUNDS and not has_filters:
-            coverage.emitted()
-            return
+        shape.append(f"-dice {fmt_num(p.model_speed.value)}")
+        if bounds != _ZERO_BOUNDS:
+            coverage.note(f"{path}.source_bounds", "unsupported", "-dice zeroes the bounds, so the stored nonzero bounds were dropped")
+    elif bit(flags0, 13) or bit(flags0, 12):
+        keyword = "-cityWindySide" if bit(flags0, 13) else "-city"
+        low, high = bounds.minimum.y, bounds.maximum.y
+        flat = bounds.minimum.x == -1.0 and bounds.minimum.z == -1.0 and bounds.maximum.x == 1.0 and bounds.maximum.z == 1.0
+        if not flat:
+            coverage.note(f"{path}.source_bounds", "unsupported", "city mode stores only a Y range, the stored X/Z extents were dropped")
+        shape.append(f"{keyword} {fmt_num(low)} {fmt_num(high)}" if (low, high) != (0.0, 0.0) else keyword)
+    elif bit(flags0, 6) or bit(flags0, 7):
+        shape.append("-model" if bit(flags0, 6) else "-modelBase")
+        if bounds != _SOURCE_COMMAND_DEFAULT_BOUNDS:
+            coverage.note(f"{path}.source_bounds", "unsupported", "-model keeps the implicit flat box, so the stored bounds were dropped")
+    elif not _bounds_identical(bounds, _SOURCE_COMMAND_DEFAULT_BOUNDS):
+        spelling = _fit_source_shape(bounds)
+        if spelling is None:
+            coverage.note(f"{path}.source_bounds", "unsupported", f"source bounds {bounds!r} have no exact shape spelling, the nearest box was emitted")
+            spelling = _nearest_box(bounds)
+        shape.append(spelling)
 
-    options = []
-    if bit(flags0, 6):
-        options.append("-model")
-    if bit(flags0, 7):
-        options.append("-modelBase")
-    if bit(flags0, 13):
-        options.append("-cityWindySide")
-    elif bit(flags0, 12):
-        options.append("-city")
+    options = list(shape)
+    if bit(flags0, 22):
+        options.append("-scaleParticles")
     if bit(flags0, 14):
         options.append("-pinToTerrain")
     if bit(flags0, 15):
@@ -248,56 +311,90 @@ def _emit_source(writer: FxWriter, coverage: Coverage, p: ParticleDescriptor, fl
         options.append("-seaOnly")
     if bit(flags0, 18):
         options.append("-lakeOnly")
-    if bit(flags0, 22):
-        options.append("-scaleParticles")
     if bit(flags2, 9):
         options.append("-resetIncoming")
     if bit(flags0, 11):
         options.append("-killOutsideCity")
 
-    # A source command with no shape creates a flat [-1,0,-1]..[1,0,1]
-    # box. Emit canonical -box half-extents plus optional center whenever
-    # that implicit box would not reproduce the stored bounds.
-    if bounds != _SOURCE_COMMAND_DEFAULT_BOUNDS:
-        half = Vec3(
-            (bounds.maximum.x - bounds.minimum.x) / 2.0,
-            (bounds.maximum.y - bounds.minimum.y) / 2.0,
-            (bounds.maximum.z - bounds.minimum.z) / 2.0,
-        )
-        center = Vec3(
-            (bounds.maximum.x + bounds.minimum.x) / 2.0,
-            (bounds.maximum.y + bounds.minimum.y) / 2.0,
-            (bounds.maximum.z + bounds.minimum.z) / 2.0,
-        )
-        shape = f"-box {fmt_vec3_sample(half)}"
-        if _nz3(center):
-            shape += f" {fmt_vec3_sample(center)}"
-        options.insert(0, shape)
+    writer.line(" ".join(["source", *options]))
+    if bit(flags0, 6) and bit(flags0, 7):
+        # A second `source` command is the only way to set both model bits:
+        # the shape switches are exclusive on one line.
+        writer.line("source -modelBase")
+    coverage.emitted()
 
-    if options:
-        writer.line("source " + " ".join(options))
-        coverage.emitted()
-    else:
-        # Reproduces cParticleSourceCommand's own flat default box.
-        writer.line("source")
-        coverage.emitted()
+
+def _bounds_identical(a: Bounds3, b: Bounds3) -> bool:
+    """Bit-exact, so a stored `-0.0` from a shape switch counts as different."""
+
+    return all(
+        bits(x) == bits(y)
+        for x, y in zip(
+            (a.minimum.x, a.minimum.y, a.minimum.z, a.maximum.x, a.maximum.y, a.maximum.z),
+            (b.minimum.x, b.minimum.y, b.minimum.z, b.maximum.x, b.maximum.y, b.maximum.z),
+        )
+    )
+
+
+def _shape_candidates(bounds: Bounds3):
+    """Source-shape spellings for stored bounds. `-box` covers every centered
+    shape including the `-0.0` a negated half leaves, `-point` stores plain
+    zeros, and an explicit center runs the parser's translation, which
+    turns a `-0.0` into `+0.0`."""
+
+    half = Vec3(
+        f32((bounds.maximum.x - bounds.minimum.x) / 2.0),
+        f32((bounds.maximum.y - bounds.minimum.y) / 2.0),
+        f32((bounds.maximum.z - bounds.minimum.z) / 2.0),
+    )
+    center = Vec3(
+        f32((bounds.maximum.x + bounds.minimum.x) / 2.0),
+        f32((bounds.maximum.y + bounds.minimum.y) / 2.0),
+        f32((bounds.maximum.z + bounds.minimum.z) / 2.0),
+    )
+    box = f"-box {fmt_vec3_sample(half)}"
+    if not _nz3(center):
+        yield box, Vec3(-half.x, -half.y, -half.z), half, center, False
+        yield "-point", Vec3(0.0, 0.0, 0.0), Vec3(0.0, 0.0, 0.0), center, False
+    yield f"{box} {fmt_vec3_sample(center)}", Vec3(-half.x, -half.y, -half.z), half, center, True
+
+
+def _fit_source_shape(bounds: Bounds3) -> Optional[str]:
+    for text, minimum, maximum, center, applied in _shape_candidates(bounds):
+        rebuilt = Bounds3(minimum, maximum)
+        if applied:
+            rebuilt = Bounds3(
+                Vec3(f32(minimum.x + center.x), f32(minimum.y + center.y), f32(minimum.z + center.z)),
+                Vec3(f32(maximum.x + center.x), f32(maximum.y + center.y), f32(maximum.z + center.z)),
+            )
+        if _bounds_identical(rebuilt, bounds):
+            return text
+    return None
+
+
+def _nearest_box(bounds: Bounds3) -> str:
+    return list(_shape_candidates(bounds))[-1][0]
 
 
 def _emit_force(writer: FxWriter, coverage: Coverage, p: ParticleDescriptor, flags0: int, path: str) -> None:
     parts = []
-    if _nz3(p.force):
-        magnitude = math.sqrt(p.force.x * p.force.x + p.force.y * p.force.y + p.force.z * p.force.z)
-        direction = Vec3(p.force.x / magnitude, p.force.y / magnitude, p.force.z / magnitude)
-        parts.append(f"-wind {fmt_vec3_sample(direction)} {fmt_num(magnitude)}")
+    if p.force.x == 0.0 and p.force.z == 0.0 and p.force.y != 0.0:
+        # -gravity adds (0, -g, 0) with no normalization, so it is exact.
+        parts.append(f"-gravity {fmt_num(-p.force.y)}")
+    elif _nz3(p.force):
+        spelling = _fit_wind(p.force)
+        if spelling is None:
+            coverage.note(f"{path}.force", "unsupported", f"force {p.force!r} has no exact -wind spelling, the nearest was emitted")
+            magnitude = math.sqrt(p.force.x * p.force.x + p.force.y * p.force.y + p.force.z * p.force.z)
+            spelling = (Vec3(p.force.x / magnitude, p.force.y / magnitude, p.force.z / magnitude), magnitude)
+        parts.append(f"-wind {fmt_vec3_sample(spelling[0])} {fmt_num(spelling[1])}")
     if p.global_wind.value != 0.0:
         parts.append(f"-global_wind {fmt_num(p.global_wind.value)}")
     if p.drag.value != 0.0:
         parts.append(f"-drag {fmt_num(p.drag.value)}")
     if p.screw.value != 0.0:
-        # warp's `-screw` writes the same field scaled by 0.02 (warp.md);
-        # the raw stored value is emitted as force's own -screw, which is
-        # the simpler of the two equally-valid readings.
-        parts.append(f"-screw {fmt_num(p.screw.value)}")
+        # Both force's and warp's -screw store the value times 0.02.
+        parts.append(f"-screw {fmt_scaled(p.screw.value, 0.02)}")
     if p.bomb.value != 0.0 or _nz3(p.bomb_direction):
         parts.append(f"-bomb {fmt_num(p.bomb.value)} {fmt_vec3_sample(p.bomb_direction)}")
 
@@ -315,10 +412,12 @@ def _emit_force(writer: FxWriter, coverage: Coverage, p: ParticleDescriptor, fla
         elif bit(flags0, 27):
             parts.append(f"-motherDuck {fmt_num(p.attractor_strength.value)} {curve}".rstrip())
         elif p.automata_id.value != 0:
-            parts.append(f"-automata {int(p.automata_id.value)} {fmt_num(p.attractor_strength.value)}")
+            # The parser stores strength 1 and this argument as the single curve value.
+            parts.append(f"-automata {int(p.automata_id.value)} {curve}".rstrip())
         else:
             parts.append(f"-attractor {fmt_num(p.attractor_strength.value)} {curve}".rstrip())
 
+    tractor_lines: List[str] = []
     if len(p.tractor_points.items) > 0 or bit(flags0, 28):
         previous_end = 0.0
         for index, tp in enumerate(p.tractor_points.items):
@@ -327,11 +426,13 @@ def _emit_force(writer: FxWriter, coverage: Coverage, p: ParticleDescriptor, fla
             # absolute-position storage before it reaches the wire, and
             # the wire never distinguishes an auto-derived tangent from an
             # explicitly authored one (force.md, "Second argument forms").
-            line = f"-tractor {fmt_vec3_sample(tp.position)} {fmt_vec3_sample(tp.direction)}"
-            duration = tp.amount.value - tp.time.value
+            # The force parser takes one -tractor per command (it never
+            # loops), so each point needs its own line.
+            line = f"force -tractor {fmt_vec3_sample(tp.position)} {fmt_vec3_sample(tp.direction)}"
+            duration = f32(tp.amount.value - tp.time.value)
             if duration != 0.0:
                 line += f" {fmt_num(duration)}"
-            parts.append(line)
+            tractor_lines.append(line)
             if tp.time.value != previous_end:
                 coverage.note(
                     f"{path}.tractor_points[{index}]",
@@ -359,9 +460,24 @@ def _emit_force(writer: FxWriter, coverage: Coverage, p: ParticleDescriptor, fla
         for part in parts:
             writer.line(part)
         writer.end_command()
-        coverage.emitted()
-    else:
-        coverage.emitted()
+    for line in tractor_lines:
+        writer.line(line)
+    coverage.emitted()
+
+
+def _fit_wind(force: Vec3):
+    """Direction and magnitude singles for which `-wind` reproduces `force`
+    bit for bit (normalize, multiply, then add to zero)."""
+
+    magnitude = f32(math.sqrt(force.x * force.x + force.y * force.y + force.z * force.z))
+    for m in nearby_singles(magnitude, 16):
+        if m == 0.0:
+            continue
+        direction = Vec3(f32(force.x / m), f32(force.y / m), f32(force.z / m))
+        unit = normalized(direction)
+        if (f32(m * unit.x), f32(m * unit.y), f32(m * unit.z)) == (force.x, force.y, force.z):
+            return direction, m
+    return None
 
 
 def _emit_terrain_repel(writer: FxWriter, coverage: Coverage, p: ParticleDescriptor, flags0: int, path: str) -> None:
@@ -385,34 +501,29 @@ def _emit_warp(writer: FxWriter, coverage: Coverage, p: ParticleDescriptor, flag
         p.alpha_warp_direction != PARTICLE_DEFAULT.alpha_warp_direction
         or p.alpha_warp_curve.items != PARTICLE_DEFAULT.alpha_warp_curve.items
     )
-    has_wiggle = len(p.wiggles.items) > 0
 
-    if not (has_uv or has_alpha or has_wiggle or bit(flags2, 8)):
-        coverage.emitted()
-        return
+    # One -wiggle per warp command (the parser does not loop), and
+    # `-wiggleDir amount a [b]` stores a at the record's second vector and
+    # b at the first (cParticleWarpCommand, Mac 0x007880EC).
+    for w in p.wiggles.items:
+        line = f"warp -wiggleDir {fmt_num(w.amount.value)} {fmt_vec3_sample(w.uv)}"
+        if _nz3(w.direction):
+            line += f" {fmt_vec3_sample(w.direction)}"
+        writer.line(line)
 
     parts = []
-    for w in p.wiggles.items:
-        line = f"-wiggleDir {fmt_num(w.amount.value)} {fmt_vec3_sample(w.direction)}"
-        if _nz3(w.uv):
-            line += f" {fmt_vec3_sample(w.uv)}"
-        parts.append(line)
     if has_uv:
         parts.append(f"-uv {fmt_num(p.uv_scale.value)} {fmt_vec2_sample(p.uv_range)}")
     if has_alpha:
         curve = fmt_float_curve(p.alpha_warp_curve.items)
-        parts.append(f"-alpha {fmt_vec3_sample(p.alpha_warp_direction)} {curve}".rstrip())
-    if bit(flags2, 8) and not has_uv and not has_alpha and not has_wiggle:
+        # The parser normalizes the direction before storing it.
+        direction = fit_unit(p.alpha_warp_direction) or p.alpha_warp_direction
+        parts.append(f"-alpha {fmt_vec3_sample(direction)} {curve}".rstrip())
+    if bit(flags2, 8) and not has_uv and not has_alpha:
         parts.append("-wiggleVerts")
-
     if parts:
-        writer.begin_command("warp")
-        for part in parts:
-            writer.line(part)
-        writer.end_command()
-        coverage.emitted()
-    else:
-        coverage.emitted()
+        writer.line(" ".join(["warp", *parts]))
+    coverage.emitted()
 
 
 def _emit_random_walk(writer: FxWriter, coverage: Coverage, p: ParticleDescriptor, flags0: int, path: str) -> None:
@@ -420,10 +531,12 @@ def _emit_random_walk(writer: FxWriter, coverage: Coverage, p: ParticleDescripto
         coverage.emitted()
         return
     writer.begin_command("randomWalk")
+    # -delay and -strength are base-plus-variation, -turn stores its two
+    # arguments directly (cParticleRandomWalkCommand, Mac 0x0077FC62).
     if p.random_walk_delay != PARTICLE_DEFAULT.random_walk_delay:
-        writer.line(f"-delay {fmt_vec2_pair(p.random_walk_delay)}")
+        writer.line(_base_vary_switch(coverage, "-delay", p.random_walk_delay, f"{path}.random_walk_delay"))
     if p.random_walk_strength != PARTICLE_DEFAULT.random_walk_strength:
-        writer.line(f"-strength {fmt_vec2_pair(p.random_walk_strength)}")
+        writer.line(_base_vary_switch(coverage, "-strength", p.random_walk_strength, f"{path}.random_walk_strength"))
     if p.random_walk_turn != PARTICLE_DEFAULT.random_walk_turn:
         writer.line(f"-turn {fmt_vec2_pair(p.random_walk_turn)}")
     if bit(flags0, 24):
@@ -438,11 +551,20 @@ def _emit_random_walk(writer: FxWriter, coverage: Coverage, p: ParticleDescripto
     coverage.emitted()
 
 
+def _base_vary_switch(coverage: Coverage, switch: str, value: Vec2, path: str) -> str:
+    base, vary, exact = fit_base_vary(value.x, value.y)
+    if not exact:
+        coverage.note(path, "unsupported", f"stored range has no exact {switch} base-plus-variation spelling, the nearest was emitted")
+    return f"{switch} {fmt_num(base)}" + (f" {fmt_num(vary)}" if vary != 0.0 else "")
+
+
 def _emit_collision(writer: FxWriter, coverage: Coverage, p: ParticleDescriptor, flags0: int, flags1: int, path: str) -> None:
     if not bit(flags0, 8):
         coverage.emitted()
         return
-    writer.begin_command("collision")
+    # Registered as `collide` (particle command table, Mac 0x00782EB6),
+    # so a `collision` line is rejected with `Unknown command`.
+    writer.begin_command("collide")
     if p.bounce.value != 0.3:
         writer.line(f"-bounce {fmt_num(p.bounce.value)}")
     if bit(flags0, 9):
@@ -486,8 +608,7 @@ def _emit_appearance(writer: FxWriter, coverage: Coverage, p: ParticleDescriptor
         if p.size_curve.items:
             # particle.size.curve: "parser multiplies size-curve inputs by
             # 50 before storing" (catalog.py) -- inverted here.
-            scaled = [v / 50.0 for v in p.size_curve.items]
-            line += " " + fmt_float_curve(scaled)
+            line += " " + " ".join(fmt_scaled(v, 50.0) for v in p.size_curve.items)
         if p.size_vary.value != PARTICLE_DEFAULT.size_vary.value:
             line += f" -vary {fmt_num(p.size_vary.value)}"
         writer.line(line)
@@ -610,6 +731,11 @@ def _emit_texture_model_align(writer: FxWriter, coverage: Coverage, p: ParticleD
 
 
 def _emit_timed_effects(writer: FxWriter, coverage: Coverage, p: ParticleDescriptor, path: str) -> None:
+    effect_base = p.terrain_name.decoded or ""
+    if effect_base:
+        # `effectBase` writes this string (cParticleEffectBaseCommand, Mac
+        # 0x0078A6DA), the record's only source of the field.
+        writer.line(f"effectBase {quote_name(effect_base)}")
     for te in p.timed_effects.items:
         name = te.effect_name.decoded or ""
         if name:

@@ -15,15 +15,15 @@ end
 
 ## Recovered switches
 
-- `viewRelative`
-- `noAutoStop`
-- `hardStop`
-- `rigid`
-- `noPropagate`
-- `applyCursor`
-- `ignoreOrientation`
-- `noLODStop`
-- `manualRestart`
+- `-viewRelative`
+- `-noAutoStop`
+- `-hardStop`
+- `-rigid`
+- `-noPropagate`
+- `-applyCursor`
+- `-ignoreOrientation`
+- `-noLODStop`
+- `-manualRestart`
 - `-startMessage <u32> <u32> <u32>`
 - `-priority <1..5>`
 
