@@ -33,13 +33,18 @@ from __future__ import annotations
 from .coverage import Coverage, CoverageNote, FxEmitResult
 from .compiler import compile_source, compile_to_bytes
 from .parser import FxError
+from .profiles import GAME, LEGACY_TOOL, PROFILES, CompilerProfile
 from .resource import PREVIEWABLE_COLLECTIONS, emit_descriptor, emit_effect_closure, emit_resource
 
 __all__ = [
     "Coverage",
     "CoverageNote",
     "FxEmitResult",
+    "CompilerProfile",
     "FxError",
+    "GAME",
+    "LEGACY_TOOL",
+    "PROFILES",
     "compile_source",
     "compile_to_bytes",
     "PREVIEWABLE_COLLECTIONS",

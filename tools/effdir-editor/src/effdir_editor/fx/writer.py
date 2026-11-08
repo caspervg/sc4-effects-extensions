@@ -65,11 +65,11 @@ def fmt_num(value: float) -> str:
 
 
 def fmt_scaled(value: float, factor: float) -> str:
-    """Decimal for a parser that stores `f32(text) * factor`: the shortest
-    text whose stored product is exactly `value` (`size` uses 50, `-screw`
-    uses the double-precision constant 0.02)."""
+    """Decimal for a parser that multiplies the parsed value before storing
+    it: the shortest text whose stored product is exactly `value` (`size`
+    uses 50, `-screw` uses the double-precision constant 0.02)."""
 
-    return shortest_decimal(value / factor, check=lambda parsed: bits(f32(parsed * factor)) == bits(value))
+    return shortest_decimal(value / factor, check=lambda parsed: bits(f32(parsed * factor)) == bits(value), unrounded=True)
 
 
 def fmt_int(value: int) -> str:

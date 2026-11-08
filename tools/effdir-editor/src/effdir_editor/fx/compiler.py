@@ -39,6 +39,7 @@ from ..model.shake import ShakeDescriptor, default_shake
 from ..wire import Bounds3, Vec2, Vec3, WireString, WireVector, make_raw_f32, make_raw_u8, make_raw_u16, make_raw_u32
 from .float32 import f32, normalized as _normalized, rotate as _rotate
 from .parser import Command, FxError, evaluate, expand_includes, parse_file
+from .profiles import GAME, LEGACY_CAMERA_VALUES, CompilerProfile
 
 _PARTICLE_DRAW = {"decal": 0, "decalInvertDepth": 1, "decalIgnoreDepth": 2, "depthDecal": 3, "depthDecalMasked": 4, "additive": 5, "additiveIgnoreDepth": 6, "modulate": 7}
 _DECAL_DRAW = {"decal": 0, "additive": 1, "modulate": 2, "decalInvertDepth": 3, "decalNoOverlap": 4}
@@ -100,8 +101,15 @@ class Args:
                 raise self.fail(f"Unexpected switch: {token}")
 
     def number(self, text: str) -> float:
+        return f32(self.unrounded(text))
+
+    def unrounded(self, text: str) -> float:
+        """The parsed value before any store rounds it. The Windows parsers
+        multiply this directly in `size`, `-screw`, and `-prob`
+        (`0x005998E0`, `0x0059A820`, `0x005989D0`)."""
+
         try:
-            return f32(evaluate(text))
+            return evaluate(text)
         except FxError as error:
             raise self.fail(error.message) from error
 
@@ -119,7 +127,7 @@ class Args:
 
     def ranged(self, text: str, low: float, high: float) -> float:
         value = self.number(text)
-        if not low <= value <= high:
+        if self.c.profile.check_ranges and not low <= value <= high:
             raise self.fail(f"argument out of range: expecting [{low:g}..{high:g}], got {value:g}")
         return value
 
@@ -129,11 +137,12 @@ class Args:
             raise self.fail(f"argument out of range: expecting [{low}..{high}], got {value}")
         return value
 
-    def vec3(self, text: str) -> Vec3:
+    def vec3(self, text: str, *, unrounded: bool = False) -> Vec3:
         parts = text.split()
         if len(parts) > 3:
             raise self.fail("Too many components for a Vector3")
-        x = [self.number(p) for p in parts] + [0.0] * 3
+        read = self.unrounded if unrounded else self.number
+        x = [read(p) for p in parts] + [0.0] * 3
         return Vec3(x[0], x[1], x[2])
 
     def vec2(self, text: str) -> Vec2:
@@ -244,8 +253,9 @@ class _ParticleState:
 class FxCompiler:
     """Executes parsed `.fx` commands against a fresh resource."""
 
-    def __init__(self, *, file: str = "") -> None:
+    def __init__(self, *, file: str = "", profile: CompilerProfile = GAME) -> None:
         self.file = file
+        self.profile = profile
         self.current_file = file
         self.resource = default_resource()
         self.textures: Dict[str, int] = {}
@@ -261,6 +271,8 @@ class FxCompiler:
         self.effect_by_key: Dict[tuple, int] = {}
         self.effect_names: Dict[str, List[int]] = {}
         self.effect_vector_capacity = 0
+        self.definition_order: Dict[tuple, List[int]] = {}
+        self.reference_counts: Dict[tuple, int] = {}
         self.child_capacities: List[int] = []
         self.name_table = _HashMultimap()
         self.key_map: List[StringU32U32Record] = []
@@ -292,12 +304,26 @@ class FxCompiler:
 
     def finish(self) -> EffDirResource:
         resource = self.resource
-        resource.effect_name_map = _vector(
-            StringU32Pair(name=WireString.from_text(name), target=make_raw_u32(target)) for name, target in self.name_table.items()
-        )
+        entries = list(self.name_table.items())
+        if self.profile.target_ordered_names:
+            entries.sort(key=lambda entry: entry[1])
+        resource.effect_name_map = _vector(StringU32Pair(name=WireString.from_text(name), target=make_raw_u32(target)) for name, target in entries)
+        self._apply_camera_fill(resource)
         resource.effect_key_map = _vector(self.key_map)
         resource.message_triggers = _vector(self.triggers)
         return resource
+
+    def _apply_camera_fill(self, resource: EffDirResource) -> None:
+        """Default camera parameters carry the writing tool's unset flag byte,
+        and a file without a `camera` command stores those defaults."""
+
+        fill = self.profile.default_camera_fill
+        metadata = resource.trailing_float_metadata
+        if fill is None or (metadata.present.value != 0 and metadata.values != LEGACY_CAMERA_VALUES):
+            return
+        resource.trailing_float_metadata = TrailingFloatMetadata(
+            present=make_raw_u8(fill), marker=make_raw_u16(0), count=make_raw_u32(len(LEGACY_CAMERA_VALUES) - 4), values=LEGACY_CAMERA_VALUES
+        )
 
     def _execute(self, command: Command) -> None:
         self.current_file = command.file or self.file
@@ -613,22 +639,35 @@ class FxCompiler:
             raise a.fail(message % name)
         return items[index]
 
-    @staticmethod
-    def _store(names: Dict[str, int], vector: WireVector, name: str, record) -> WireVector:
+    def _store(self, names: Dict[str, int], vector: WireVector, name: str, record) -> WireVector:
         """`Add*Description`: lowercased name, append or replace in place."""
 
         key = name.lower()
-        if key in names:
+        if key in names and not self.profile.append_named_pools:
             vector.items[names[key]] = record
             return vector
         names[key] = len(vector.items)
+        self.definition_order.setdefault((id(names), key), []).append(len(vector.items))
         return _vector(vector.items + [record])
+
+    def _bind_reference(self, names: Dict[str, int], name: str) -> int:
+        """A pool index for the next reference to `name` under pool appending:
+        its k-th definition for the k-th reference, staying on the last."""
+
+        key = (id(names), name.lower())
+        definitions = self.definition_order.get(key) or [names[name.lower()]]
+        uses = self.reference_counts.get(key, 0)
+        self.reference_counts[key] = uses + 1
+        return definitions[min(uses, len(definitions) - 1)]
+
+    def _unit(self, vector: Vec3, order: str) -> Vec3:
+        return _normalized(vector, order) if self.profile.normalize_vectors else vector
 
     # --- particle sub-commands ------------------------------------------------
 
     def _p_curve(self, a: Args, attribute: str, scale: float = 1.0) -> None:
         p = self.particle.record
-        setattr(p, attribute, _vector(f32(a.number(v) * scale) for v in a.positional(1)))
+        setattr(p, attribute, _vector(f32(a.unrounded(v) * scale) for v in a.positional(1)))
 
     def _p_alpha(self, a: Args) -> None:
         p = self.particle.record
@@ -645,7 +684,7 @@ class FxCompiler:
         vary = a.switch("vary", 1)
         if vary:
             v = a.vec3(vary[0])
-            if not all(0.0 <= c <= 1.0 for c in (v.x, v.y, v.z)):
+            if self.profile.check_ranges and not all(0.0 <= c <= 1.0 for c in (v.x, v.y, v.z)):
                 raise a.fail("argument out of range: expecting components [0..1]")
             p.color_vary = v
         if a.command.name.endswith("255"):
@@ -756,7 +795,7 @@ class FxCompiler:
         if velocity:
             speed = a.number(velocity[1]) if len(velocity) > 1 else 1.0
             vary = a.number(velocity[2]) if len(velocity) > 2 else 0.0
-            direction = _normalized(a.vec3(velocity[0]), "yzx")
+            direction = self._unit(a.vec3(velocity[0]), "yzx")
             p.emit_velocity_bounds = _cube(direction, vary)
             p.emit_speed = Vec2(f32(speed * f32(1.0 - vary)), f32(speed * f32(1.0 + vary)))
         speed_switch = a.switch("speed", 1)
@@ -766,17 +805,19 @@ class FxCompiler:
             p.emit_speed = Vec2(f32(base - vary), f32(base + vary))
         direction_switch = a.switch("dir", 1)
         if direction_switch:
-            direction = a.vec3(direction_switch[0])
+            unrounded = self.profile.unrounded_direction_bounds
+            direction = a.vec3(direction_switch[0], unrounded=unrounded)
             if direction.x * direction.x + direction.y * direction.y + direction.z * direction.z > 0.0:
-                direction = _normalized(direction, "zyx")
+                direction = self._unit(direction, "zyx")
             vary = Vec3(0.0, 0.0, 0.0)
             if len(direction_switch) > 1:
                 parts = direction_switch[1].split()
+                read = a.unrounded if unrounded else a.number
                 if len(parts) == 1:
-                    v = a.number(parts[0])
+                    v = read(parts[0])
                     vary = Vec3(v, v, v)
                 elif len(parts) == 3:
-                    vary = Vec3(*(a.number(q) for q in parts))
+                    vary = Vec3(*(read(q) for q in parts))
                 else:
                     raise a.fail("Expecting float or vector3 for second -dir argument")
             p.emit_velocity_bounds = Bounds3(
@@ -901,7 +942,7 @@ class FxCompiler:
             p.force = Vec3(f32(p.force.x + 0.0), f32(p.force.y - g), f32(p.force.z + 0.0))
         wind = a.switch("wind", 1)
         if wind:
-            direction = _normalized(a.vec3(wind[0]), "zyx")
+            direction = self._unit(a.vec3(wind[0]), "zyx")
             if len(wind) > 1:
                 magnitude = a.number(wind[1])
                 direction = Vec3(f32(magnitude * direction.x), f32(magnitude * direction.y), f32(magnitude * direction.z))
@@ -911,7 +952,7 @@ class FxCompiler:
             _set_f(p, "global_wind", a.number(global_wind[0]))
         screw = a.switch("screw", 1)
         if screw:
-            _set_f(p, "screw", f32(a.number(screw[0]) * 0.02))
+            _set_f(p, "screw", f32(a.unrounded(screw[0]) * 0.02))
         bomb = a.switch("bomb", 1)
         if bomb:
             _set_f(p, "bomb", a.number(bomb[0]))
@@ -1017,7 +1058,7 @@ class FxCompiler:
         p = self.particle.record
         screw = a.switch("screw", 1)
         if screw:
-            _set_f(p, "screw", f32(a.number(screw[0]) * 0.02))
+            _set_f(p, "screw", f32(a.unrounded(screw[0]) * 0.02))
         wiggle = a.switch("wiggle", 4)
         if wiggle:
             period = a.number(wiggle[0])
@@ -1043,7 +1084,7 @@ class FxCompiler:
             _set_bit(p, "flags_2", 8)
         alpha = a.switch("alpha", 2)
         if alpha:
-            p.alpha_warp_direction = _normalized(a.vec3(alpha[0]), "xyz")
+            p.alpha_warp_direction = self._unit(a.vec3(alpha[0]), "xyz")
             p.alpha_warp_curve = _vector(a.ranged(v, 0.0, 1.0) for v in alpha[1:])
             _set_bit(p, "flags_2", 8)
 
@@ -1437,7 +1478,9 @@ class FxCompiler:
         for event in e.events.items:
             lowered = (event.name.decoded or "").lower()
             value = event.value
-            if event.flags.value & 1 and lowered in self.shake_names:
+            if self.profile.append_named_pools:
+                pass  # bound when the command was parsed
+            elif event.flags.value & 1 and lowered in self.shake_names:
                 value = make_raw_u32(self.shake_names[lowered])
             elif event.flags.value & 0b1100 and lowered in self.light_names:
                 value = make_raw_u32(self.light_names[lowered])
@@ -1456,6 +1499,8 @@ class FxCompiler:
         """
 
         old, fresh = previous.descriptions.items, new.descriptions.items
+        if not self.profile.track_revision:
+            return
         if len(fresh) > self.child_capacities[index]:
             self.child_capacities[index] = len(fresh)  # reallocated, every element copy-constructed
             return
@@ -1496,7 +1541,7 @@ class FxCompiler:
             t.scale = a.number(scale[0])
         lod_range = a.switch("lodRange", 2)
         lod = a.switch("lod", 1) if lod_range is None else None
-        if (lod_range or lod) and self.select_group:
+        if (lod_range or lod) and self.select_group and self.profile.check_select_lod:
             raise a.fail("Can't specify LOD in a select")
         if lod_range:
             _set_u8(d, "lod", a.uint(lod_range[0]))
@@ -1520,9 +1565,9 @@ class FxCompiler:
             _set_f(d, "size_scale_max", a.number(size_scale[1]) if len(size_scale) > 1 else first)
         probability = a.switch("prob", 1)
         if probability:
-            if not self.select_group:
+            if not self.select_group and not self.profile.allow_prob_outside_select:
                 raise a.fail("-prob only valid inside a select group")
-            d.probability = make_raw_u16(_bias_round(f32(a.number(probability[0]) * 65535.0)) & 0xFFFF)
+            d.probability = make_raw_u16(_bias_round(a.unrounded(probability[0]) * 65535.0) & 0xFFFF)
         if a.switch("ignoreLength") is not None:
             _set_bit(d, "flags", 0)
         if a.switch("respectLength") is not None:
@@ -1536,6 +1581,8 @@ class FxCompiler:
         if name.lower() not in table:
             raise a.fail(unknown % name)
         d = self._child_record(a, name, kind)
+        if self.profile.append_named_pools:
+            d.description_index = make_raw_u32(self._bind_reference(table, name))
         if system_sequence and self.system_sequence:
             _set_bit(d, "flags", 1)
         self._describe(a, d)
@@ -1558,7 +1605,7 @@ class FxCompiler:
 
     def _c_visual(self, a: Args) -> None:
         name = a.positional(1)[0]
-        if name.lower() not in self.effect_names:
+        if name.lower() not in self.effect_names and not self.profile.allow_external_effects:
             raise a.fail(f"Unknown visual effect: {name}")
         d = self._child_record(a, name, 2)
         self._describe(a, d)
@@ -1576,6 +1623,9 @@ class FxCompiler:
         event = default_event_record()
         event.flags = event.flags.replace(1 << flag_bit)
         event.name = WireString.from_text(name)
+        if self.profile.append_named_pools:
+            table = self.shake_names if flag_bit == 0 else self.light_names
+            event.value = make_raw_u32(self._bind_reference(table, name))
         self.effect.events = _vector(self.effect.events.items + [event])
         return event
 
@@ -1980,7 +2030,7 @@ _TOP_LEVEL: Dict[str, Callable] = {
 }
 
 
-def compile_source(text: str, *, file: str = "", include_dir: Optional[str] = None) -> EffDirResource:
+def compile_source(text: str, *, file: str = "", include_dir: Optional[str] = None, profile: CompilerProfile = GAME) -> EffDirResource:
     """Compile `.fx` source text to a resource model, or raise `FxError`.
 
     `include` paths are relative to `include_dir` (default: the working
@@ -1988,14 +2038,14 @@ def compile_source(text: str, *, file: str = "", include_dir: Optional[str] = No
     """
 
     source, origins = expand_includes(text, file, include_dir or os.getcwd())
-    compiler = FxCompiler(file=file)
+    compiler = FxCompiler(file=file, profile=profile)
     compiler.run(parse_file(source, file=file, origins=origins))
     return compiler.finish()
 
 
-def compile_to_bytes(text: str, *, file: str = "", include_dir: Optional[str] = None) -> bytes:
+def compile_to_bytes(text: str, *, file: str = "", include_dir: Optional[str] = None, profile: CompilerProfile = GAME) -> bytes:
     """Compile `.fx` source text to packed EFFDIR bytes."""
 
     from ..model.resource import write_resource
 
-    return write_resource(compile_source(text, file=file, include_dir=include_dir))
+    return write_resource(compile_source(text, file=file, include_dir=include_dir, profile=profile))

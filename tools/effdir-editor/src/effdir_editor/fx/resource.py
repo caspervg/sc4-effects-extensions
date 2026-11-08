@@ -32,6 +32,7 @@ from .particles import emit_particles, particle_asset_ids
 from .sequences import emit_sequence
 from .shakes import emit_shake
 from .defaults import EFFECT_DEFAULT
+from .profiles import GAME, CompilerProfile
 from .writer import FxWriter, fmt_asset_name, fmt_hex, fmt_num, quote_name
 
 _HEADER = (
@@ -166,11 +167,11 @@ def _emit_camera_params(writer: FxWriter, coverage: Coverage, resource: EffDirRe
     writer.blank()
 
 
-def _emit_pools(writer: FxWriter, coverage: Coverage, resource: EffDirResource, names: ResolvedNames) -> None:
+def _emit_pools(writer: FxWriter, coverage: Coverage, resource: EffDirResource, names: ResolvedNames, profile: CompilerProfile) -> None:
     for index, particle in enumerate(resource.particles.items):
         name = names.by_collection.get(("particles", index), f"particle_{index}")
         note_non_finite_floats(particle, f"particles[{index}]", coverage)
-        emit_particles(writer, coverage, name, particle, path=f"particles[{index}]")
+        emit_particles(writer, coverage, name, particle, path=f"particles[{index}]", profile=profile)
         writer.blank()
 
     for index, decal in enumerate(resource.decals.items):
@@ -203,7 +204,7 @@ def _emit_pools(writer: FxWriter, coverage: Coverage, resource: EffDirResource, 
         writer.blank()
 
 
-def _emit_effects(writer: FxWriter, coverage: Coverage, resource: EffDirResource, names: ResolvedNames) -> None:
+def _emit_effects(writer: FxWriter, coverage: Coverage, resource: EffDirResource, names: ResolvedNames, profile: CompilerProfile) -> None:
     # visualEffect requires its target to already be defined
     # (docs/reference/effect-children/visual-effect.md), so raw record
     # order is not safe to emit directly -- an effect referencing a later
@@ -233,7 +234,7 @@ def _emit_effects(writer: FxWriter, coverage: Coverage, resource: EffDirResource
         aliases = [a for a in names.effect_names.get(effect_index, []) if a] or [f"effect_{effect_index}"]
         primary, *extra = aliases
         note_non_finite_floats(effect, f"effect_descriptions[{effect_index}]", coverage)
-        emit_effect(writer, coverage, resource, names, effect_index, effect, primary)
+        emit_effect(writer, coverage, resource, names, effect_index, effect, primary, profile)
         writer.blank()
         for alias in extra:
             emit_effect_alias(writer, primary, alias)
@@ -386,10 +387,17 @@ def _effect_emission_plan(resource: EffDirResource, coverage: Coverage) -> _Emis
         referenced = sorted(idx for (t, idx) in owner if t == component_type)
         for orphan in sorted(set(range(total)) - set(referenced)):
             nexts = [idx for idx in referenced if idx > orphan]
-            if not nexts:
-                coverage.note(f"components.{attribute}[{orphan}]", "unsupported", "unreferenced pool record with no later record to anchor a ghost definition, so it is dropped")
+            if nexts:
+                host = owner[(component_type, nexts[0])]
+            else:
+                # After the last user of this pool, so its own definition adds
+                # nothing here and the ghost lands after every earlier record.
+                last_user = max((owner[(component_type, idx)] for idx in referenced), default=-1)
+                candidates = [i for i in range(last_user + 1, count) if not any(d.component_type.value == component_type for d in effects[i].descriptions.items)]
+                host = candidates[-1] if candidates else None
+            if host is None:
+                coverage.note(f"components.{attribute}[{orphan}]", "unsupported", "unreferenced pool record with no effect to anchor a ghost definition, so it is dropped")
                 continue
-            host = owner[(component_type, nexts[0])]
             plan.orphans.setdefault(host, []).append((component_type, orphan))
     for host, orphans in plan.orphans.items():
         if host >= last_growth and host not in plan.redefinitions and len(orphans) >= len(effects[host].descriptions.items):
@@ -547,8 +555,12 @@ def emit_descriptor(resource: EffDirResource, path: str) -> Optional[FxEmitResul
     return FxEmitResult(text=writer.text(), coverage=coverage)
 
 
-def emit_resource(resource: EffDirResource) -> FxEmitResult:
-    """Decompile an entire resource into one fx source document."""
+def emit_resource(resource: EffDirResource, profile: CompilerProfile = GAME) -> FxEmitResult:
+    """Decompile an entire resource into one fx source document.
+
+    `profile` selects the spellings for a non-game writer, matching the
+    profile the text will be compiled with.
+    """
 
     coverage = Coverage()
     writer = FxWriter()
@@ -563,8 +575,8 @@ def emit_resource(resource: EffDirResource) -> FxEmitResult:
     _emit_inline_resource_ids(writer, coverage, resource, names, effect_indices, orphan_ids)
     _emit_asset_ids(writer, resource, _all_pools(resource))
     _emit_camera_params(writer, coverage, resource)
-    _emit_pools(writer, coverage, resource, names)
-    _emit_effects(writer, coverage, resource, names)
+    _emit_pools(writer, coverage, resource, names, profile)
+    _emit_effects(writer, coverage, resource, names, profile)
     _emit_bindings(writer, resource)
 
     return FxEmitResult(text=writer.text(), coverage=coverage)

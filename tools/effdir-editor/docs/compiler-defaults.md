@@ -94,3 +94,16 @@ These are consequences of the collection containers rather than of any command:
 | Effect vector capacity | `vector::resize`, doubling from 1 | Growth at indices 1, 2, 4, ... zeroes every child revision and shrinks child vectors to fit. |
 | Effect name map order | SGI/STLport `hash_multimap`, `h = 5*h + c` | Written in bucket iteration order, insertions at the bucket head after any equal key. |
 | Vector normalization | Windows parsers, 24-bit x87 (inferred) | Every step rounds to single, with the squares added in parser order. |
+
+## Compiler profiles
+
+`effdir-compile --profile` and the `profile=` argument choose what the compiler
+reproduces. `game`, the default, is the game's own parser. `legacy-tool`
+reproduces most third-party `EFFDIR` files such as NAM previews and the JENX
+packs. Its fields are listed in `fx/profiles.py`, with the evidence in
+`decompiler-semantics.md`. Pass the same profile to `emit_resource` so the
+decompiler picks spellings for it.
+
+`size`, `-screw`, and `-prob` in every profile multiply the unrounded parsed
+value, then round the stored result.
+

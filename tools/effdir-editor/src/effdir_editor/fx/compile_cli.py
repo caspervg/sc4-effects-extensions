@@ -9,6 +9,7 @@ import sys
 from ..container.dbpf import Tgi, create_archive_and_save, replace_entry_and_save
 from .compiler import compile_to_bytes
 from .parser import FxError
+from .profiles import PROFILES
 
 _EFFDIR_TYPE = 0xEA5118B0
 _EFFDIR_GROUP = 0xEA5118B1
@@ -27,6 +28,7 @@ def main(argv=None) -> int:
     parser.add_argument("-o", "--output", required=True, help="package to create, or an existing package to add the entry to (its other entries are kept)")
     parser.add_argument("--instance", required=True, type=_parse_instance, help="instance ID of the entry, for example 0x7ABC0001")
     parser.add_argument("--compress", action="store_true", help="store the entry QFS-compressed")
+    parser.add_argument("--profile", choices=sorted(PROFILES), default="game", help="writing behaviour to reproduce (default: the game's own parser)")
     args = parser.parse_args(argv)
 
     try:
@@ -37,7 +39,7 @@ def main(argv=None) -> int:
         return 2
 
     try:
-        data = compile_to_bytes(source, file=os.path.basename(args.input), include_dir=os.path.dirname(os.path.abspath(args.input)))
+        data = compile_to_bytes(source, file=os.path.basename(args.input), include_dir=os.path.dirname(os.path.abspath(args.input)), profile=PROFILES[args.profile])
     except FxError as error:
         print(str(error), file=sys.stderr)
         return 1

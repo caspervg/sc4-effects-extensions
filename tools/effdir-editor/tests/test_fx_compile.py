@@ -6,12 +6,13 @@ that file is absent. The rest compile small sources and read the bytes back.
 
 from __future__ import annotations
 
+import dataclasses
 import os
 
 import pytest
 
 from effdir_editor.container.dbpf import DbpfArchive, Tgi
-from effdir_editor.fx import emit_resource
+from effdir_editor.fx import LEGACY_TOOL, emit_resource
 from effdir_editor.fx.compile_cli import main as compile_main
 from effdir_editor.fx.compiler import compile_source, compile_to_bytes
 from effdir_editor.fx.parser import FxError, evaluate, parse_file
@@ -215,6 +216,100 @@ def test_include_expands_files_and_reports_their_positions(tmp_path):
         compile_source("include gone.fx\n", file="main.fx", include_dir=str(tmp_path))
     with pytest.raises(FxError, match=r'"include" takes a single argument'):
         compile_source("include a b\n", file="main.fx", include_dir=str(tmp_path))
+
+
+def test_game_parser_multiplies_before_rounding():
+    # `size` and `-screw` multiply the parsed value directly, so 16.8 stores
+    # exactly 840 (Windows 0x005998E0), not the rounded product.
+    particle = compile_source("particles p\n    size 16.8\n    force -screw 20\nend\n").particles.items[0]
+    assert particle.size_curve.items == [840.0]
+    assert particle.screw.value == pytest.approx(0.4000000059604645, abs=0.0)
+
+
+def test_rate_after_mode_command_keeps_a_multi_sample_curve():
+    # Vanilla-independent spelling: the mode bit survives a later `-rate`.
+    source = "particles p\n    emit -inject 1\n    emit -rate 1 2 3\nend\n"
+    particle = compile_source(source).particles.items[0]
+    assert particle.flags_0.value & 2 and particle.emit_curve.items == [1.0, 2.0, 3.0]
+    text = emit_resource(compile_source(source)).text
+    assert compile_to_bytes(text) == compile_to_bytes(source)
+
+
+def test_source_keywords_and_shape_take_separate_commands():
+    # The shape switches are an else-if chain on one line, so a stored model
+    # bit with explicit bounds needs a `source -model` of its own first.
+    source = 'particles p\n    source -model\n    source -box "3 0 3"\nend\n'
+    resource = compile_source(source)
+    assert resource.particles.items[0].flags_0.value & (1 << 6)
+    assert resource.particles.items[0].source_bounds.maximum.x == 3.0
+    assert compile_to_bytes(emit_resource(resource).text) == write_resource(resource)
+
+
+def test_trailing_orphan_anchors_on_a_later_effect():
+    resource = compile_source("soundID s 5\neffect a\n    soundEffect -name s\nend\neffect b\nend\neffect b\nend\n")
+    orphan = dataclasses.replace(resource.components.sounds.items[0], resource_key=make_raw_u32(9))
+    resource.components.sounds.items.append(orphan)
+    text = emit_resource(resource).text
+    again = compile_source(text)
+    assert len(again.components.sounds.items) == 2
+    assert again.components.sounds.items[1].resource_key.value == 9
+
+
+LEGACY_SOURCE = """
+particles p
+    life 1
+end
+effect b
+    particleEffect p
+end
+effect a
+    visualEffect elsewhere
+end
+"""
+
+
+def test_legacy_profile_changes_nothing_by_default():
+    with pytest.raises(FxError, match="Unknown visual effect"):
+        compile_source(LEGACY_SOURCE)
+
+
+def test_legacy_profile_orders_names_by_record_and_fills_the_camera_byte():
+    resource = compile_source(LEGACY_SOURCE, profile=LEGACY_TOOL)
+    assert [n.target.value for n in resource.effect_name_map.items] == [0, 1]
+    assert resource.trailing_float_metadata.present.value == 0xCD
+    assert resource.trailing_float_metadata.values[:5] == (2500.0, 1250.0, 625.0, 312.0, 156.0)
+    data = write_resource(resource)
+    assert write_resource(compile_source(emit_resource(read_resource(data), LEGACY_TOOL).text, profile=LEGACY_TOOL)) == data
+
+    explicit = compile_source("camera 5000 -sideSwipe 10\n" + LEGACY_SOURCE, profile=LEGACY_TOOL)
+    assert explicit.trailing_float_metadata.present.value == 1
+
+
+def test_legacy_profile_keeps_direction_vectors_and_skips_game_checks():
+    source = 'particles p\n    emit -dir "0 3 0" "1 1 1"\n    aspect 1 -vary 2\n    warp -alpha "0.9239 0 -0.3827" 1\nend\neffect e\n    select\n        particleEffect p -lodRange 0 5 -prob 0.5\n    end\nend\n'
+    with pytest.raises(FxError, match="out of range"):
+        compile_source(source)
+    resource = compile_source(source, profile=LEGACY_TOOL)
+    particle = resource.particles.items[0]
+    assert particle.emit_velocity_bounds.minimum.y == 2.0 and particle.emit_velocity_bounds.maximum.y == 4.0
+    assert particle.alpha_warp_direction.x == pytest.approx(0.9239, abs=1e-6)
+
+
+def test_legacy_profile_binds_repeated_names_in_definition_order():
+    source = "particles x\n    life 1\nend\nparticles x\n    life 2\nend\neffect e\n    particleEffect x\n    particleEffect x\nend\n"
+    assert len(compile_source(source).particles.items) == 1
+    resource = compile_source(source, profile=LEGACY_TOOL)
+    assert len(resource.particles.items) == 2
+    assert [d.description_index.value for d in resource.effect_descriptions.items[0].descriptions.items] == [0, 1]
+
+
+def test_cli_profile_option(tmp_path):
+    source = tmp_path / "e.fx"
+    source.write_text("effect only\nend\n", encoding="utf-8")
+    package = tmp_path / "e.dat"
+    assert compile_main([str(source), "-o", str(package), "--instance", "1", "--profile", "legacy-tool"]) == 0
+    data = DbpfArchive.open(str(package)).read_decompressed(Tgi(0xEA5118B0, 0xEA5118B1, 1))
+    assert read_resource(data).trailing_float_metadata.present.value == 0xCD
 
 
 def test_redefining_an_effect_keeps_its_record_and_name_map_entry():

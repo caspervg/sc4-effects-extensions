@@ -14,11 +14,13 @@ throughout `docs/reference/binary/effdir.md` itself
 from __future__ import annotations
 
 import math
+from decimal import Decimal
 from typing import List, Optional, Tuple
 
 from ..model.particle import ParticleDescriptor
 from ..wire import Bounds3, Vec2, Vec3
 from .float32 import bits, f32, fit_base_vary, fit_unit, nearby_singles, normalized
+from .profiles import GAME, CompilerProfile
 from .bits import bit
 from .coverage import Coverage
 from .defaults import PARTICLE_DEFAULT
@@ -51,7 +53,7 @@ def _nz3(v: Vec3) -> bool:
     return v.x != 0.0 or v.y != 0.0 or v.z != 0.0
 
 
-def emit_particles(writer: FxWriter, coverage: Coverage, name: str, p: ParticleDescriptor, *, path: str) -> None:
+def emit_particles(writer: FxWriter, coverage: Coverage, name: str, p: ParticleDescriptor, *, path: str, profile: CompilerProfile = GAME) -> None:
     writer.begin(f"particles {quote_name(name)}")
 
     flags0 = p.flags_0.value
@@ -59,14 +61,14 @@ def emit_particles(writer: FxWriter, coverage: Coverage, name: str, p: ParticleD
     flags2 = p.flags_2.value
 
     _emit_life(writer, coverage, p, path)
-    _emit_emission(writer, coverage, p, flags0, path)
+    _emit_emission(writer, coverage, p, flags0, path, profile)
     _emit_source(writer, coverage, p, flags0, flags2, path)
-    _emit_force(writer, coverage, p, flags0, path)
+    _emit_force(writer, coverage, p, flags0, path, profile)
     _emit_terrain_repel(writer, coverage, p, flags0, path)
-    _emit_warp(writer, coverage, p, flags2, path)
+    _emit_warp(writer, coverage, p, flags2, path, profile)
     _emit_random_walk(writer, coverage, p, flags0, path)
     _emit_collision(writer, coverage, p, flags0, flags1, path)
-    _emit_appearance(writer, coverage, p, path)
+    _emit_appearance(writer, coverage, p, path, profile)
     _emit_texture_model_align(writer, coverage, p, flags0, flags2, path)
     _emit_timed_effects(writer, coverage, p, path)
     _report_unrepresentable(coverage, p, path)
@@ -114,7 +116,7 @@ def _emit_life(writer: FxWriter, coverage: Coverage, p: ParticleDescriptor, path
     coverage.emitted()
 
 
-def _emit_emission(writer: FxWriter, coverage: Coverage, p: ParticleDescriptor, flags0: int, path: str) -> None:
+def _emit_emission(writer: FxWriter, coverage: Coverage, p: ParticleDescriptor, flags0: int, path: str, profile: CompilerProfile = GAME) -> None:
     has_curve = p.emit_curve.items != PARTICLE_DEFAULT.emit_curve.items
     is_maintain = bit(flags0, 2)
     is_inject = bit(flags0, 1)
@@ -132,41 +134,37 @@ def _emit_emission(writer: FxWriter, coverage: Coverage, p: ParticleDescriptor, 
             line += f" -delay {fmt_vec2_pair(p.emit_delay)}"
         writer.line(line)
         timing = [t for t in timing if not t.startswith("-delay ")]
-        if len(p.emit_curve.items) > 1:
-            coverage.note(
-                f"{path}.emit_curve",
-                "info",
-                f"maintain takes a single value but {len(p.emit_curve.items)} curve samples are stored, only the first was emitted",
-            )
-        rate_parts: List[str] = []
+        # `emit -rate` clears the curve but keeps the mode bit, so a stored
+        # multi-sample curve is the mode command followed by a rate.
+        rate_parts: List[str] = [f"-rate {fmt_float_curve(p.emit_curve.items)}"] if len(p.emit_curve.items) > 1 else []
+    elif is_inject and len(p.emit_curve.items) > 1:
+        writer.line(f"emit -inject {fmt_num(value)}")
+        rate_parts = [f"-rate {fmt_float_curve(p.emit_curve.items)}"]
     elif is_inject:
         rate_parts = [f"-inject {fmt_num(value)}"]
-        if len(p.emit_curve.items) > 1:
-            coverage.note(
-                f"{path}.emit_curve",
-                "unsupported",
-                f"inject mode stores one value but {len(p.emit_curve.items)} curve samples are present, only the first can be emitted",
-            )
     elif has_curve:
         rate_parts = [f"-rate {fmt_float_curve(p.emit_curve.items)}"]
     else:
         rate_parts = []
 
-    motion = _emission_motion(coverage, p, flags0, path)
+    motion = _emission_motion(coverage, p, flags0, path, profile)
     if rate_parts or timing or motion:
         writer.line(" ".join(["emit", *rate_parts, *timing, *motion]))
     coverage.emitted()
 
 
-def _emission_motion(coverage: Coverage, p: ParticleDescriptor, flags0: int, path: str) -> List[str]:
+def _emission_motion(coverage: Coverage, p: ParticleDescriptor, flags0: int, path: str, profile: CompilerProfile = GAME) -> List[str]:
     """Velocity and speed. `-dir` writes the bounds and leaves speed alone,
     so it can carry the stored box exactly, while `-velocity` also rewrites
     speed (cParticleEmitCommand, Mac 0x0078667C)."""
 
     parts: List[str] = []
     bounds = p.emit_velocity_bounds
-    if bounds != PARTICLE_DEFAULT.emit_velocity_bounds:
-        spelling = _fit_direction(bounds)
+    if bounds != PARTICLE_DEFAULT.emit_velocity_bounds and profile.unrounded_direction_bounds:
+        center_text, half_text = _unrounded_direction_text(bounds)
+        parts.append(f"-dir {center_text}" + (f" {half_text}" if half_text else ""))
+    elif bounds != PARTICLE_DEFAULT.emit_velocity_bounds:
+        spelling = _fit_direction(bounds, profile.normalize_vectors)
         if spelling is None:
             coverage.note(
                 f"{path}.emit_velocity_bounds",
@@ -189,12 +187,12 @@ def _emission_motion(coverage: Coverage, p: ParticleDescriptor, flags0: int, pat
     return parts
 
 
-def _fit_direction(bounds: Bounds3):
+def _fit_direction(bounds: Bounds3, normalize: bool = True):
     """`-dir center [half]`: the parser normalizes center (when nonzero) and
     stores center minus and plus half. Returns exact singles or None."""
 
     def forward(center: Vec3, half: Vec3) -> Bounds3:
-        if center.x * center.x + center.y * center.y + center.z * center.z > 0.0:
+        if normalize and center.x * center.x + center.y * center.y + center.z * center.z > 0.0:
             center = normalized(center, "zyx")
         return Bounds3(
             Vec3(f32(center.x - half.x), f32(center.y - half.y), f32(center.z - half.z)),
@@ -206,7 +204,7 @@ def _fit_direction(bounds: Bounds3):
     half = Vec3(f32((mx.x - mn.x) / 2.0), f32((mx.y - mn.y) / 2.0), f32((mx.z - mn.z) / 2.0))
     if forward(center, half) == bounds:
         return center, (half if _nz3(half) else None)
-    unit = fit_unit(center, "zyx")
+    unit = fit_unit(center, "zyx") if normalize else None
     if unit is not None and forward(unit, half) == bounds:
         return unit, (half if _nz3(half) else None)
     # Stored values passed through a normalize, so search single-precision
@@ -227,10 +225,33 @@ def _fit_direction(bounds: Bounds3):
             for z in nearby_singles(target.z, 2):
                 if forward(Vec3(x, y, z), h) == bounds:
                     return Vec3(x, y, z), (h if _nz3(h) else None)
-    unit = fit_unit(target, "zyx")
+    unit = fit_unit(target, "zyx") if normalize else None
     if unit is not None and forward(unit, h) == bounds:
         return unit, (h if _nz3(h) else None)
     return None
+
+
+def _unrounded_direction_text(bounds: Bounds3) -> Tuple[str, Optional[str]]:
+    """`-dir` center and half as text for a writer that does this arithmetic
+    on the parsed decimals. Short decimals are used when they land on the
+    stored values, otherwise the exact doubles, which always do."""
+
+    def fixed(value: float) -> str:
+        return format(Decimal(repr(value)), "f")
+
+    def axis(lo: float, hi: float) -> Tuple[str, str]:
+        center, half = (lo + hi) / 2.0, (hi - lo) / 2.0
+        for c in nearby_singles(f32(center), 8):
+            for h in nearby_singles(f32(half), 8):
+                tc, th = float(fmt_num(c)), float(fmt_num(h))
+                if bits(f32(tc - th)) == bits(lo) and bits(f32(tc + th)) == bits(hi):
+                    return fmt_num(c), fmt_num(h)
+        return fixed(center), fixed(half)
+
+    mn, mx = bounds.minimum, bounds.maximum
+    pairs = [axis(mn.x, mx.x), axis(mn.y, mx.y), axis(mn.z, mx.z)]
+    half = " ".join(p[1] for p in pairs)
+    return '"' + " ".join(p[0] for p in pairs) + '"', (f'"{half}"' if half != "0 0 0" else None)
 
 
 def _emission_shared_options(p: ParticleDescriptor, flags0: int) -> List[str]:
@@ -271,28 +292,37 @@ def _emit_source(writer: FxWriter, coverage: Coverage, p: ParticleDescriptor, fl
     # The shape switches are an else-if chain (cParticleSourceCommand, Mac
     # 0x0077F0D6): -dice, -model, -modelBase, -city and -cityWindySide each
     # exclude a box, so the line can carry only one of them.
-    shape: List[str] = []
+    # One `source` command holds one of these, and the bounds come from the
+    # last command only, while flags and the dice value accumulate. Anything
+    # the last command cannot carry gets a command of its own first.
+    keywords: List[Tuple[str, Optional[Bounds3]]] = []
+    flat_y = Bounds3(Vec3(-1.0, bounds.minimum.y, -1.0), Vec3(1.0, bounds.maximum.y, 1.0))
     if has_dice:
-        shape.append(f"-dice {fmt_num(p.model_speed.value)}")
-        if bounds != _ZERO_BOUNDS:
-            coverage.note(f"{path}.source_bounds", "unsupported", "-dice zeroes the bounds, so the stored nonzero bounds were dropped")
-    elif bit(flags0, 13) or bit(flags0, 12):
+        keywords.append((f"-dice {fmt_num(p.model_speed.value)}", _ZERO_BOUNDS))
+    if bit(flags0, 13) or bit(flags0, 12):
         keyword = "-cityWindySide" if bit(flags0, 13) else "-city"
         low, high = bounds.minimum.y, bounds.maximum.y
-        flat = bounds.minimum.x == -1.0 and bounds.minimum.z == -1.0 and bounds.maximum.x == 1.0 and bounds.maximum.z == 1.0
-        if not flat:
-            coverage.note(f"{path}.source_bounds", "unsupported", "city mode stores only a Y range, the stored X/Z extents were dropped")
-        shape.append(f"{keyword} {fmt_num(low)} {fmt_num(high)}" if (low, high) != (0.0, 0.0) else keyword)
-    elif bit(flags0, 6) or bit(flags0, 7):
-        shape.append("-model" if bit(flags0, 6) else "-modelBase")
-        if bounds != _SOURCE_COMMAND_DEFAULT_BOUNDS:
-            coverage.note(f"{path}.source_bounds", "unsupported", "-model keeps the implicit flat box, so the stored bounds were dropped")
-    elif not _bounds_identical(bounds, _SOURCE_COMMAND_DEFAULT_BOUNDS):
-        spelling = _fit_source_shape(bounds)
-        if spelling is None:
-            coverage.note(f"{path}.source_bounds", "unsupported", f"source bounds {bounds!r} have no exact shape spelling, the nearest box was emitted")
-            spelling = _nearest_box(bounds)
-        shape.append(spelling)
+        ranged = f"{keyword} {fmt_num(low)} {fmt_num(high)}" if (low, high) != (0.0, 0.0) else keyword
+        keywords.append((ranged, flat_y))
+    if bit(flags0, 6):
+        keywords.append(("-model", _SOURCE_COMMAND_DEFAULT_BOUNDS))
+    if bit(flags0, 7):
+        keywords.append(("-modelBase", _SOURCE_COMMAND_DEFAULT_BOUNDS))
+
+    shape: List[str] = []
+    if keywords and _bounds_identical(bounds, keywords[-1][1]):
+        for keyword, _ in keywords[:-1]:
+            writer.line(f"source {keyword.split()[0] if keyword.startswith('-city') else keyword}")
+        shape.append(keywords[-1][0])
+    else:
+        for keyword, _ in keywords:
+            writer.line(f"source {keyword.split()[0] if keyword.startswith('-city') else keyword}")
+        if not _bounds_identical(bounds, _SOURCE_COMMAND_DEFAULT_BOUNDS):
+            spelling = _fit_source_shape(bounds)
+            if spelling is None:
+                coverage.note(f"{path}.source_bounds", "unsupported", f"source bounds {bounds!r} have no exact shape spelling, the nearest box was emitted")
+                spelling = _nearest_box(bounds)
+            shape.append(spelling)
 
     options = list(shape)
     if bit(flags0, 22):
@@ -317,10 +347,6 @@ def _emit_source(writer: FxWriter, coverage: Coverage, p: ParticleDescriptor, fl
         options.append("-killOutsideCity")
 
     writer.line(" ".join(["source", *options]))
-    if bit(flags0, 6) and bit(flags0, 7):
-        # A second `source` command is the only way to set both model bits:
-        # the shape switches are exclusive on one line.
-        writer.line("source -modelBase")
     coverage.emitted()
 
 
@@ -376,11 +402,15 @@ def _nearest_box(bounds: Bounds3) -> str:
     return list(_shape_candidates(bounds))[-1][0]
 
 
-def _emit_force(writer: FxWriter, coverage: Coverage, p: ParticleDescriptor, flags0: int, path: str) -> None:
+def _emit_force(writer: FxWriter, coverage: Coverage, p: ParticleDescriptor, flags0: int, path: str, profile: CompilerProfile = GAME) -> None:
     parts = []
     if p.force.x == 0.0 and p.force.z == 0.0 and p.force.y != 0.0:
         # -gravity adds (0, -g, 0) with no normalization, so it is exact.
         parts.append(f"-gravity {fmt_num(-p.force.y)}")
+    elif _nz3(p.force) and not profile.normalize_vectors:
+        # This writer keeps the direction as given, so a unit magnitude
+        # stores the vector exactly.
+        parts.append(f"-wind {fmt_vec3_sample(p.force)} 1")
     elif _nz3(p.force):
         spelling = _fit_wind(p.force)
         if spelling is None:
@@ -495,7 +525,7 @@ def _emit_terrain_repel(writer: FxWriter, coverage: Coverage, p: ParticleDescrip
     coverage.emitted()
 
 
-def _emit_warp(writer: FxWriter, coverage: Coverage, p: ParticleDescriptor, flags2: int, path: str) -> None:
+def _emit_warp(writer: FxWriter, coverage: Coverage, p: ParticleDescriptor, flags2: int, path: str, profile: CompilerProfile = GAME) -> None:
     has_uv = p.uv_scale.value != PARTICLE_DEFAULT.uv_scale.value or p.uv_range != PARTICLE_DEFAULT.uv_range
     has_alpha = (
         p.alpha_warp_direction != PARTICLE_DEFAULT.alpha_warp_direction
@@ -517,7 +547,7 @@ def _emit_warp(writer: FxWriter, coverage: Coverage, p: ParticleDescriptor, flag
     if has_alpha:
         curve = fmt_float_curve(p.alpha_warp_curve.items)
         # The parser normalizes the direction before storing it.
-        direction = fit_unit(p.alpha_warp_direction, "xyz") or p.alpha_warp_direction
+        direction = p.alpha_warp_direction if not profile.normalize_vectors else (fit_unit(p.alpha_warp_direction, "xyz") or p.alpha_warp_direction)
         parts.append(f"-alpha {fmt_vec3_sample(direction)} {curve}".rstrip())
     if bit(flags2, 8) and not has_uv and not has_alpha:
         parts.append("-wiggleVerts")
@@ -584,7 +614,7 @@ def _emit_collision(writer: FxWriter, coverage: Coverage, p: ParticleDescriptor,
     coverage.emitted()
 
 
-def _emit_appearance(writer: FxWriter, coverage: Coverage, p: ParticleDescriptor, path: str) -> None:
+def _emit_appearance(writer: FxWriter, coverage: Coverage, p: ParticleDescriptor, path: str, profile: CompilerProfile = GAME) -> None:
     if p.color_curve.items != PARTICLE_DEFAULT.color_curve.items or p.color_vary != PARTICLE_DEFAULT.color_vary:
         line = "color"
         if p.color_curve.items:

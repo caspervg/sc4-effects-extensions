@@ -24,6 +24,7 @@ from .bits import bit
 from .coverage import Coverage
 from .defaults import EFFECT_DEFAULT, UNINITIALIZED_U32
 from .float32 import bits, f32, rotate, shortest_decimal
+from .profiles import GAME, CompilerProfile
 from .inline_components import automata_effect_lines, brush_effect_lines, camera_effect_lines, scrubber_effect_lines, sound_effect_lines
 from .names import ResolvedNames
 from ..wire import Vec3
@@ -166,6 +167,7 @@ def _shared_child_options(
     path: str,
     default_ignore_length: bool = False,
     probability: int | None = None,
+    profile: CompilerProfile = GAME,
 ) -> List[str]:
     opts: List[str] = []
     t = d.legacy_transform
@@ -216,7 +218,7 @@ def _shared_child_options(
         opts.append("-ignoreLength" if bit(d.flags.value, 0) else "-respectLength")
     stored_probability = d.probability.value if probability is None else probability
     if d.probability.value != 0:
-        if in_select:
+        if in_select or profile.allow_prob_outside_select:
             opts.append(f"-prob {_fmt_probability(stored_probability)}")
         else:
             coverage.note(
@@ -238,12 +240,13 @@ def _emit_description_record(
     *,
     in_select: bool,
     probability: int | None = None,
+    profile: CompilerProfile = GAME,
 ) -> None:
     path = f"effect_descriptions[{effect_index}].descriptions[{description_index}]"
     component_type = d.component_type.value
 
     if component_type == 2:
-        shared = _shared_child_options(d, allow_shells=False, in_select=in_select, coverage=coverage, path=path, probability=probability)
+        shared = _shared_child_options(d, allow_shells=False, in_select=in_select, coverage=coverage, path=path, probability=probability, profile=profile)
         writer.line(f"visualEffect {quote_name(d.name.decoded or '')}" + "".join(f" {o}" for o in shared))
         coverage.emitted()
         return
@@ -266,6 +269,7 @@ def _emit_description_record(
         path=path,
         default_ignore_length=_default_ignore_length(resource, component_type, index),
         probability=probability,
+        profile=profile,
     )
 
     if component_type == 0:
@@ -332,10 +336,10 @@ def _fmt_probability(stored: int) -> str:
     """`-prob p`: the shortest text that rounds to this 16-bit value."""
 
     def check(parsed: float) -> bool:
-        biased = f32(f32(parsed * 65535.0) + 12582912.0)
+        biased = f32(parsed * 65535.0 + 12582912.0)
         return (struct.unpack("<I", struct.pack("<f", biased))[0] - 0x4B400000) & 0xFFFF == stored
 
-    return shortest_decimal(stored / 65535.0, check=check)
+    return shortest_decimal(stored / 65535.0, check=check, unrounded=True)
 
 
 def _emit_child_range(
@@ -347,6 +351,7 @@ def _emit_child_range(
     items,
     start: int,
     stop: int,
+    profile: CompilerProfile = GAME,
 ) -> None:
     i = start
     while i < stop:
@@ -362,15 +367,15 @@ def _emit_child_range(
             count = j - i
             for k in range(i, j):
                 probability = None if k != j - 1 else (items[k].probability.value + count + 1) & 0xFFFF
-                _emit_description_record(writer, coverage, resource, names, effect_index, k, items[k], in_select=True, probability=probability)
+                _emit_description_record(writer, coverage, resource, names, effect_index, k, items[k], in_select=True, probability=probability, profile=profile)
             writer.end()
             i = j
         else:
-            _emit_description_record(writer, coverage, resource, names, effect_index, i, items[i], in_select=False)
+            _emit_description_record(writer, coverage, resource, names, effect_index, i, items[i], in_select=False, profile=profile)
             i += 1
 
 
-def _emit_children(writer: FxWriter, coverage: Coverage, resource: EffDirResource, names: ResolvedNames, effect_index: int, effect: EffectDescription) -> None:
+def _emit_children(writer: FxWriter, coverage: Coverage, resource: EffDirResource, names: ResolvedNames, effect_index: int, effect: EffectDescription, profile: CompilerProfile = GAME) -> None:
     items = effect.descriptions.items
     i, n = 0, len(items)
     while i < n:
@@ -383,7 +388,7 @@ def _emit_children(writer: FxWriter, coverage: Coverage, resource: EffDirResourc
             # "particleSequence" (`cGroupEffectCommand::RegisterCommands`,
             # Mac `0x007824b8`); `systemSequence` is only the class name.
             writer.begin("particleSequence")
-        _emit_child_range(writer, coverage, resource, names, effect_index, items, i, j)
+        _emit_child_range(writer, coverage, resource, names, effect_index, items, i, j, profile)
         if is_system_sequence:
             writer.end()
         i = j
@@ -436,6 +441,7 @@ def emit_effect(
     effect_index: int,
     effect: EffectDescription,
     primary_name: str,
+    profile: CompilerProfile = GAME,
 ) -> None:
     switches: List[str] = []
     flags = effect.flags.value
@@ -471,7 +477,7 @@ def emit_effect(
 
     header = f"effect {quote_name(primary_name)}" + "".join(f" {s}" for s in switches)
     writer.begin(header)
-    _emit_children(writer, coverage, resource, names, effect_index, effect)
+    _emit_children(writer, coverage, resource, names, effect_index, effect, profile)
     _emit_events(writer, coverage, resource, effect_index, effect)
     chain = effect.chain_effect.decoded or ""
     if chain:

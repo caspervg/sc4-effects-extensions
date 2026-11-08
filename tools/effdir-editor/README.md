@@ -86,7 +86,11 @@ entry is added or replaced and every other entry of the package is kept. The
 `--compress` switch stores the entry QFS-compressed. Bad input is reported as
 `file:line: message` and the command exits with status 1. `include` and
 `sinclude` lines are resolved relative to the including file, and compiling
-the decompiled vanilla `EFFDIR` reproduces all 1,094,484 bytes.
+the decompiled vanilla `EFFDIR` reproduces all 1,094,484 bytes. Third-party
+files such as NAM previews and the JENX packs were written by another tool:
+pass `--profile legacy-tool` to reproduce most of them byte for byte, and see
+`docs/decompiler-semantics.md` for what that profile changes and what it does
+not reach.
 
 From Python, `effdir_editor.fx.compile_source(text, file="x.fx")` returns the
 `EffDirResource`, and `compile_to_bytes` returns the packed bytes.

@@ -469,3 +469,54 @@ silent. The compiler expands both and keeps file and line positions.
 resource into the collection being saved (`AddToCollection`, `0x003E4120`), and
 a resource stores no pool names, so compiling it would copy the other resource
 into the output and still not let source text reference its particles.
+
+### Non-vanilla `EFFDIR` files and the `legacy-tool` profile
+
+Over every readable `EFFDIR` in the plugin folders and the JENX release, 9001
+entries in 152 packages, the `game` profile reproduces none byte for byte and
+the `legacy-tool` profile reproduces 8981. The files were not written by the
+game's parser, and the differences are general behaviour of whatever wrote
+them, so they live in `fx/profiles.py` behind an explicit `--profile` option.
+The tool itself is unidentified. Its output shows MSVC debug fills (`0xCC`
+stack words in `startMessage`, a `0xCD` heap byte in the camera flag), which
+points to a debug build.
+
+| Behaviour | Evidence | Profile field |
+| --- | --- | --- |
+| Name map in record order instead of hash order | All but one of the multi-name resources are ordered by target | `target_ordered_names` |
+| `0xCD` camera flag with default parameters | 8,949 resources store `0xCD` with `2500 1250 625 312 156`, parallax `0 0`, size `4`, side swipe `7`, and an explicit `camera` writes `1` | `default_camera_fill` |
+| Direction vectors kept as written | `-alpha "0.9239 0 -0.3827"` stores those digits, and velocity boxes such as `2..4` have a non-unit center | `normalize_vectors` |
+| Parsed decimals in `-dir` arithmetic | `0.3` and `0.1` store exactly `0.2` and `0.4`, which single-precision arithmetic cannot do | `unrounded_direction_bounds` |
+| `-vary` above 1, `-lod` in a `select`, `-prob` outside a `select`, and `visualEffect` to another resource | The game's parser rejects each, and the files store them | `check_ranges`, `check_select_lod`, `allow_prob_outside_select`, `allow_external_effects` |
+| Repeated pool names append, with the k-th reference using the k-th definition | One effect uses `sheep_walk` at two indices, and 18,609 of 18,641 children fit | `append_named_pools` |
+| Transform `revision` is not counted | Every non-vanilla child stores 0 | `track_revision` |
+
+The binding rule is the weakest entry. It is an observed fit, and 32 children
+do not follow it.
+
+Remaining differences under `legacy-tool`, 20 entries:
+
+| Cause | Entries | Status |
+| --- | ---: | --- |
+| Children share one anonymous brush or sound record | 4 | The game's parser always appends a new record, so no valid spelling exists |
+| Child names that do not match their pool's name | 6 | Several names resolve to one index, with no rule that explains it. Identical-record merging was tried and is contradicted |
+| Values stored behind a cleared enable bit (`bounce`, `terrainRepel`) | 7 | No command writes the value without setting the bit |
+| Repeated-name binding that the k-th rule misses | 3 | Copies of one resource, where effects reuse earlier definitions |
+| `source_bounds` minimum Y of `-0.0` with a positive maximum | 7 | No shape produces this sign |
+| Name map order of one resource (3 copies) | 3 | The only multi-name resource not in record order |
+| `scrubber value_10` and `brush marker` | 2 | Unknown fields with no source spelling, likely uninitialized memory |
+
+An entry can fall under several causes.
+
+These findings also corrected general rules, used by every profile:
+
+- `size`, `-screw`, and `-prob` multiply the parsed value directly in the
+  Windows parsers (`0x005998E0`, `0x0059A820`, `0x005989D0`), before any store
+  rounds it, so `size 16.8` stores exactly `840`.
+- A stored multi-sample emit curve with the inject or maintain bit is the mode
+  command followed by `emit -rate`, since `-rate` keeps the bit.
+- A shape-exclusive `source` keyword with bounds it cannot carry gets its own
+  `source` line, because flags accumulate and the last command sets the bounds.
+- An orphaned anonymous record after the last referenced one anchors on a
+  later effect that does not use that pool.
+

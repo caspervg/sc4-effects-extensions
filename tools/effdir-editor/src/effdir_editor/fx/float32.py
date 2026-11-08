@@ -93,11 +93,12 @@ def rotate(matrix, axis: str, turns: float) -> None:
     matrix.row_2 = Vec3(columns[0][2], columns[1][2], columns[2][2])
 
 
-def shortest_decimal(value: float, *, check: Optional[Callable[[float], bool]] = None) -> str:
+def shortest_decimal(value: float, *, check: Optional[Callable[[float], bool]] = None, unrounded: bool = False) -> str:
     """Shortest fixed-notation decimal that parses back to `value`.
 
     With `check`, the text must also satisfy it after parsing to single
-    precision, for spellings where the parser transforms the value.
+    precision, or as a double when `unrounded`, for spellings where the
+    parser transforms the value.
     """
 
     if value == 0.0:
@@ -105,8 +106,8 @@ def shortest_decimal(value: float, *, check: Optional[Callable[[float], bool]] =
     single = f32(value)
     for precision in range(1, 18):
         text = f"{single:.{precision}g}"
-        parsed = f32(float(text))
-        if check(parsed) if check is not None else parsed == single:
+        parsed = float(text) if unrounded else f32(float(text))
+        if check(parsed) if check is not None else f32(float(text)) == single:
             break
     else:
         text = f"{single:.17g}"
