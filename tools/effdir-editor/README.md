@@ -24,16 +24,17 @@ Three layers, matching the spec:
   `commit`) that both the UI and any future scripting entry point call.
 - `bindings/` — the command-binding catalog mapping text-format command
   names to wire members, with evidence levels.
-- `fx/` — a one-way, best-effort decompiler from the binary model to the
-  recovered `.fx` source language (`docs/reference/`, `docs/syntax/`).
-  Not a compiler: there is no path back from fx text to `EFFDIR` bytes.
-  Every field it cannot represent (opaque or unconfirmed component types,
-  ambiguous shared-storage fields, non-identity rotation matrices, ...) is
-  reported through a `Coverage` object rather than guessed.
+- `fx/` — the `.fx` source language in both directions. The decompiler
+  (`resource.py` and its per-record emitters) turns the binary model into
+  source, and every field it cannot represent is reported through a
+  `Coverage` object rather than guessed. The compiler (`parser.py`, a Lark
+  grammar, and `compiler.py`) turns source into the binary model and packed
+  bytes.
   Constructor and command-parser defaults used for canonical minimal output
   are documented in [`docs/compiler-defaults.md`](docs/compiler-defaults.md).
-  Recovered command equivalences and irrecoverable source distinctions are
-  documented in [`docs/decompiler-semantics.md`](docs/decompiler-semantics.md).
+  Recovered command equivalences, irrecoverable source distinctions, and
+  the remaining compile differences against vanilla are documented in
+  [`docs/decompiler-semantics.md`](docs/decompiler-semantics.md).
 - `ui/` — wxPython AUI-docked workspace (resource tree, property-grid
   record editor, hex view with source-span highlighting, diagnostics
   list). Only talks to `editor/`, never to `wire/`/`model/` directly.
@@ -72,6 +73,27 @@ between monitors with different scale factors.
   effect description in the tree). Each export opens a syntax-highlighted
   preview listing everything that could not be represented before you
   save or copy it.
+
+## Compiling `.fx` source
+
+```sh
+uv run effdir-compile input.fx -o out.dat --instance 0x7ABC0001
+```
+
+This compiles `input.fx` and writes it as `EA5118B0-EA5118B1-<instance>`, the
+same shape as a small plugin EFFDIR entry. If `out.dat` already exists, the
+entry is added or replaced and every other entry of the package is kept. The
+`--compress` switch stores the entry QFS-compressed. Bad input is reported as
+`file:line: message` and the command exits with status 1. `include` and
+`sinclude` lines are resolved relative to the including file, and compiling
+the decompiled vanilla `EFFDIR` reproduces all 1,094,484 bytes. Third-party
+files such as NAM previews and the JENX packs were written by another tool:
+pass `--profile legacy-tool` to reproduce most of them byte for byte, and see
+`docs/decompiler-semantics.md` for what that profile changes and what it does
+not reach.
+
+From Python, `effdir_editor.fx.compile_source(text, file="x.fx")` returns the
+`EffDirResource`, and `compile_to_bytes` returns the packed bytes.
 
 ## Tests
 

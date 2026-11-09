@@ -58,12 +58,15 @@ These values apply only when the command itself is present:
 
 | Command | Parser default |
 | --- | --- |
-| `collision` | bounce `0.3`; therefore an active collision with bounce `0.3` omits `-bounce` |
+| `collide` | bounce `0.3`, so an active collision with bounce `0.3` omits `-bounce` |
 | `color -vary` | exactly one grouped `Vec3`; each component must be in `0..1` |
 | `source` | before switches, initializes a flat box `-1 0 -1` through `1 0 1`; this differs from the descriptor constructor's cube |
 | `model` | sets draw mode `depthDecal` (`3`) before parsing shared draw options |
+| `life` | an omitted `-preroll` stores the base value, and `base [vary]` stores base minus and plus vary |
+| `shake` | length `5`, fade `1`, aspect `1`, amplitude `[1]`, frequency `[60]`, table `random`, set when the block opens |
+| `light` | an empty strength curve becomes `[1]` and an empty color curve becomes `kColorBlue` when the block closes |
 | `scrubberEffect` action | low-byte demolition effect ID `1`; `-explode` instead defaults it to `2` and sets upper action bits `0x1300` |
-| `cameraParams` | `-parallax 100 101`; `-size 4`; `-sideSwipe 7`; one positional zoom value expands to five values by repeated halving |
+| `camera` | `-parallax 100 101`, `-size 4`, `-sideSwipe 7`, and one positional zoom value expands to five values by repeated halving |
 
 For effect-child LOD, the stored range byte is the exclusive upper bound:
 `-lod n` writes `n, n+1`, while `-lodRange min max` writes `min, max+1`.
@@ -80,3 +83,32 @@ Constructor-default suppression is intentionally command-oriented rather
 than a whole-record shortcut. If one member changes, the decompiler emits
 the complete source command needed to reproduce that group, including any
 default-looking curve or scalar that the parser would otherwise clear.
+
+## Resource-level compiler behavior
+
+These are consequences of the collection containers rather than of any command:
+
+| Behavior | Source | Effect |
+| --- | --- | --- |
+| Effect child `revision` | `cS3DTransform::operator=` and copy constructor | Starts at 0. Plus one per assignment over an existing slot, reset by reallocation of either vector. |
+| Effect vector capacity | `vector::resize`, doubling from 1 | Growth at indices 1, 2, 4, ... zeroes every child revision and shrinks child vectors to fit. |
+| Effect name map order | SGI/STLport `hash_multimap`, `h = 5*h + c` | Written in bucket iteration order, insertions at the bucket head after any equal key. |
+| Vector normalization | Windows parsers, 24-bit x87 (inferred) | Every step rounds to single, with the squares added in parser order. |
+
+## Compiler profiles
+
+`effdir-compile --profile` and the `profile=` argument choose what the compiler
+reproduces. `game`, the default, is the game's own parser. `legacy-tool`
+reproduces most third-party `EFFDIR` files such as NAM previews and the JENX
+packs. Its fields are listed in `fx/profiles.py`, with the evidence in
+`decompiler-semantics.md`. Pass the same profile to `emit_resource` so the
+decompiler picks spellings for it.
+
+`matlab-2012` is `legacy-tool` plus the scrubber damage of the `WriteEffDir.m`
+that Xannepan posted to SC4Devotion in 2012 (topic 14724, reply 49). Use it
+only for a file that went through that writer, since it rewrites every
+scrubber, and most third-party scrubbers do not show the damage.
+
+`size`, `-screw`, and `-prob` in every profile multiply the unrounded parsed
+value, then round the stored result.
+

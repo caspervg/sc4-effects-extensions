@@ -8,10 +8,10 @@ switches.
 ## Recovered shared switches
 
 - `-offset <vec3>`
-- `-rotateX <float>`
-- `-rotateY <float>`
-- `-rotateZ <float>`
-- `-rotateXYZ <x> <y> <z>`
+- `-rotateX <turns>`
+- `-rotateY <turns>`
+- `-rotateZ <turns>`
+- `-rotateXYZ <x> <y> <z>` (fractions of a full turn, `0.25` is 90 degrees)
 - `-rotateZXY <z> <x> <y>`
 - `-scale <float>`
 - `-lod <uint>`

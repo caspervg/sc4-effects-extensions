@@ -9,11 +9,13 @@ authors = [
 ]
 requires-python = ">=3.12"
 dependencies = [
+    "lark>=1.3.1",
     "wxpython>=4.3.1",
 ]
 
 [project.scripts]
 effdir-editor = "effdir_editor:main"
+effdir-compile = "effdir_editor.fx.compile_cli:main"
 
 [build-system]
 requires = ["hatchling"]

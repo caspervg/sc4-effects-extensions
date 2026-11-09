@@ -275,7 +275,8 @@ the base and endpoint, so it is reconstructed as `base, base + range`.
 ## Effect-child rotations
 
 The shared child parser accepts `-rotateX`, `-rotateY`, `-rotateZ`,
-`-rotateXYZ`, and `-rotateZXY`, converts degrees to radians, and applies the
+`-rotateXYZ`, and `-rotateZXY`, multiplies each angle by 2*pi (so angles are
+fractions of a full turn, not degrees), and applies the
 matrix rotations in command order. The matrix methods at `0x00660230`,
 `0x0062D1F6`, and `0x0065FF22` post-multiply, so `-rotateXYZ x y z` stores
 `Rx(x) * Ry(y) * Rz(z)`.
@@ -331,7 +332,7 @@ so the decompiler ignores this provenance field without a coverage warning.
 
 Source and collision `-killOutsideCity` set the same particle flag bit 11.
 The decompiler emits it once on the canonical `source` command; repeating it in
-`collision` would not preserve any additional state or behavior.
+`collide` would not preserve any additional state or behavior.
 
 ## Coverage-note policy
 
@@ -343,3 +344,217 @@ documented canonicalization choices, not decompilation gaps, and no longer
 produce per-record coverage messages. Coverage is reserved for stored state the
 emitted source cannot reproduce, invalid enum domains, and genuinely unknown
 runtime fields.
+
+## Compiling `.fx` back to `EFFDIR`
+
+The compiler (`fx/parser.py`, `fx/compiler.py`) mirrors the game's command
+parsers. Its acceptance test decompiles vanilla `SimCity_1.dat`, compiles the
+text, and compares every collection. The result, on the 1,094,484-byte vanilla
+resource:
+
+| Collection | Records matching |
+| --- | --- |
+| particles, decals, shakes, lights, dynamic particles | all |
+| brushes, attractors, scrubbers, sequences, sounds, cameras | all |
+| effect descriptions, effect name map, effect key map, message triggers | all |
+
+The compiled resource is byte-identical to vanilla: every collection matches
+and `write_resource` of the compiled model equals the original 1,094,484
+bytes. The two rules below are what closed the last gap.
+
+### Findings from building the compiler
+
+These corrections come from comparing the compiled output with vanilla and
+from the Mac `cSC4EffectsParser` parsers:
+
+- Particle collision is registered as `collide`, not `collision`.
+- Effect flags are switches (`effect e -viewRelative`), and `life` is
+  `base [vary]`, with an omitted `-preroll` storing the base.
+- `-speed`, `randomWalk -delay`, and `randomWalk -strength` store base minus
+  and plus variation. `-turn`, `-delay` on `emit`, and `-trigger` store their
+  two values directly.
+- `force -screw` and `warp -screw` both store the value times the double
+  constant `0.02`, and `force -gravity g` stores `(0, -g, 0)` exactly.
+- Only one `-tractor` or `-wiggle` is read per command, so each point needs
+  its own line. `-wiggleDir amount a b` stores `a` in the second record vector
+  and `b` in the first.
+- `-rotateX`, `-rotateY`, `-rotateZ`, and `-rotateXYZ` take fractions of a
+  turn, multiplied by 2*pi by the parser. They are not degrees.
+- `maintain` accepts only `-delay`. The other timing switches live on `emit`.
+- `source -model`, `-city`, and the other shape switches are an else-if chain,
+  so a line can only name one. Two model bits need two `source` commands.
+- `camera` takes any number of positional zooms. One value expands to five by
+  halving, and more than one is stored as given.
+- Particle `effectBase` writes the field earlier named `terrain_name`.
+- `cSC4EffectsCollection` stores effects in an SGI `hash_multimap` keyed on
+  the lowercased name, so the on-disk name map order is that table's iteration
+  order: hash `h = 5*h + c`, initial buckets from `next_prime(100)`, prime
+  growth, inserts at the bucket head (after an equal key), and growth reverses
+  chains. This reproduces all 1154 vanilla entries. Name-map order in
+  third-party resources such as NAM's differs and is harmless to the reader.
+- Shake and light parser defaults differ from their constructors. The shake
+  block starts at length `5`, fade `1`, aspect `1`, amplitude `[1]`, and
+  frequency `[60]`. An empty light strength or color falls back to `[1]`
+  and `kColorBlue`.
+- A `select` block adds `~n` to its last child's probability, where `n` is the
+  number of explicit children. It counts instead of summing, so vanilla's
+  probabilities in a select do not total `65535`.
+- Anonymous children start with `ignoreLength` set for attractor, scrubber,
+  and camera children, and for sound children with zero length. `-respectLength`
+  clears it.
+
+A record that nothing references (an orphaned sound, scrubber, or camera) and
+an effect whose children were created after a later record both come from an
+effect that was defined twice. The decompiler reproduces that with an empty
+*ghost* `effect` block at the record's position, or a ghost carrying the
+orphaned children, followed by the real definition. Both are valid source,
+since the parser keeps one description per name and priority and appends
+anonymous children as it parses.
+
+### Transform `revision` counts assignments
+
+`legacy_transform.revision` is the transform's own byte counter, not a parser
+counter. The parser bumps it on a scratch record, but `vector<cDescriptionRec>`
+push_back copy-constructs into the scratch vector, and the copy constructor
+zeroes it (Mac `cS3DTransform` at `0x0066039A`). Only `cS3DTransform::operator=`
+(`0x0062BA46`) increments it, without copying the source's value, so the byte
+counts assignments since the slot was last constructed.
+
+`AddEffectDescription` assigns over the existing slot when an effect is
+redefined (same name and priority): children below the old size are assigned
+(revision plus one), children past the old size are copy-constructed (zero),
+and a definition with more children than the slot's capacity reallocates and
+zeroes all of them. The effect vector itself doubles when full (capacity 1, 2,
+4, ... 2048), and reallocating it copy-constructs every effect, which zeroes
+every child and shrinks each child vector to fit.
+
+The compiler replays this in `_assign_children` and `_grow_effect_vector`. The
+decompiler reads a nonzero revision as that many redefinitions after the last
+growth of the effect vector (index 1024 for vanilla) and emits ghost
+definitions to get there, with named filler children so no pool gains records.
+Each ghost is a valid `effect` block that the game's parser reads the same way.
+This matches all 62 vanilla children in 21 effects, which all carry a uniform
+value per effect, as equal-sized redefinitions produce.
+
+### Normalization and the x87 state
+
+The Windows parsers normalize a vector with the inverse length times each
+component (`-alpha` `0x0059B680`, `-dir` and `-velocity` `0x0059C280`, `-wind`
+`0x0059A820`). The instruction streams keep the inverse and products in x87
+registers, and the Mac build divides by the length instead. Vanilla values
+fixed which arithmetic is right:
+
+| Particle | Stored value | Model that reaches it |
+| --- | --- | --- |
+| 85 | velocity center Y `0.99999994` | single-precision inverse, for example `-dir "0 1.7 0"` |
+| 457 | alpha direction `0.9238796 0 -0.38268349` | single-precision inverse with squares summed in parser order |
+
+An extended or double inverse and the Mac division reach neither value. The
+CRT sets 53-bit precision (`__setdefaultprecision`), so the parser ran with the
+FPU in 24-bit mode, which is inferred from these records and is the state
+Direct3D setup usually leaves. `float32.normalized` models it: every `fmul`,
+`fadd`, `fsqrt`, and `fdiv` rounds to single, and the squares add in the
+parser's order. This is verified against vanilla and the disassembly, and the
+FPU state itself is inferred.
+
+### `include` and `loadResource`
+
+`cFileParser::DoParseFile` treats `include` and `sinclude` the same way, at the
+line level, before command dispatch, with its own comment state per file and
+paths relative to the including file. A missing file raises `Couldn't open
+file` for both in this build, even though the later ArgScript makes `sinclude`
+silent. The compiler expands both and keeps file and line positions.
+
+`loadResource` is rejected by the compiler. The game merges the loaded
+resource into the collection being saved (`AddToCollection`, `0x003E4120`), and
+a resource stores no pool names, so compiling it would copy the other resource
+into the output and still not let source text reference its particles.
+
+### Non-vanilla `EFFDIR` files and the `legacy-tool` profile
+
+Over every readable `EFFDIR` in the plugin folders and the JENX release, 9001
+entries in 152 packages, the `game` profile reproduces none byte for byte and
+the `legacy-tool` profile reproduces 8981. The files were not written by the
+game's parser, and the differences are general behaviour of whatever wrote
+them, so they live in `fx/profiles.py` behind an explicit `--profile` option.
+Two lineages show up. 8,949 entries store `0xCD` in the camera flag, from a
+tool that is still unidentified. Its output shows MSVC debug fills (`0xCC`
+stack words in `startMessage`, a `0xCD` heap byte in the camera flag), which
+points to a debug build. The other 52 store vanilla's exact camera block, the
+block Xannepan's Matlab scripts copy from their input.
+
+| Behaviour | Evidence | Profile field |
+| --- | --- | --- |
+| Name map in record order instead of hash order | All but one of the multi-name resources are ordered by target | `target_ordered_names` |
+| `0xCD` camera flag with default parameters | 8,949 resources store `0xCD` with `2500 1250 625 312 156`, parallax `0 0`, size `4`, side swipe `7`, and an explicit `camera` writes `1` | `default_camera_fill` |
+| Direction vectors kept as written | `-alpha "0.9239 0 -0.3827"` stores those digits, and velocity boxes such as `2..4` have a non-unit center | `normalize_vectors` |
+| Parsed decimals in `-dir` arithmetic | `0.3` and `0.1` store exactly `0.2` and `0.4`, which single-precision arithmetic cannot do | `unrounded_direction_bounds` |
+| `-vary` above 1, `-lod` in a `select`, `-prob` outside a `select`, and `visualEffect` to another resource | The game's parser rejects each, and the files store them | `check_ranges`, `check_select_lod`, `allow_prob_outside_select`, `allow_external_effects` |
+| Repeated pool names append, with the k-th reference using the k-th definition | `IsolateEff.m` copies a new record per child with no merging. Every pool with a repeated name is in the vanilla-camera lineage, where 140 of 157 children fit | `append_named_pools` |
+| Transform `revision` is not counted | Every non-vanilla child stores 0 | `track_revision` |
+
+`IsolateEff.m` isolates one effect, so the step that joins its outputs into a
+multi-effect file is not in the published scripts. That part of the binding
+rule is inferred.
+
+#### Xannepan's Matlab scripts
+
+`ReadEffDir.m`, `WriteEffDir.m`, and `IsolateEff.m` were posted by Xannepan in
+SC4Devotion topic 14724, reply 49, on 9 November 2012, for Matlab R2011a. He
+said later that he had found errors in this version, and the JENX releases may
+have used a newer one.
+
+- The writer is a field-by-field dump of the reader. Both have 305 fields in
+  the same order with the same types, so the scripts add nothing of their own.
+- `sec135` is the camera block. `IsolateEff.m` copies it, along with `init` and
+  the section end bytes, so `0xCD` is inherited when it is present. Vanilla
+  stores `1`, so no vanilla input carries it.
+- `sec(7)` reads the first 22 bytes of a scrubber as `u1a, u1b, u1b` with
+  `ubit58`. The third read replaces the second and the writer stores it twice.
+  That overwrites `value_10`, `demolish`, and the low bits of `action`, and
+  clears the top two bits of `min_size`. Applying this to the 0x1027 scrubber
+  gives the 0x1029 scrubber byte for byte, so `value_10 = 311296` is this bug.
+  The other six scrubbers in the JENX release do not show the damage, so it
+  is the separate `matlab-2012` profile.
+- Child flag 2 in `IsolateEff.m` reuses the previous `sec_nr`, and 431 of the
+  448 flag-2 children come first in their effect, where that variable is
+  undefined. The other 17 would have a nonzero key, and all 448 store 0. The
+  published script did not write these children.
+- Flag `0x10` is tested as decimal `case 10`, and no non-vanilla child uses
+  that flag. Flag 3 maps to section 4, but the brush layout is section 5.
+  `sec(8).u1` is also assigned twice, and no non-vanilla file has a sequence.
+  None of these reach a stored difference.
+
+Remaining differences under `legacy-tool`, 20 entries:
+
+| Cause | Entries | Status |
+| --- | ---: | --- |
+| Children share one anonymous brush or sound record | 4 | The game's parser always appends a new record, so no valid spelling exists. `IsolateEff.m` also gives each child its own record, so it does not explain this |
+| Child names that do not match their pool's name | 6 | `IsolateEff.m` copies a child's name and only rewrites its key, so a mismatch needs a separate edit. Identical-record merging was tried and is contradicted |
+| Values stored behind a cleared enable bit (`bounce`, `terrainRepel`) | 7 | No command writes the value without setting the bit. The scripts store flags and values independently. The first two particles of 0x3aa18104 are vanilla records 1167 and 1168 with only `flags_0` changed, from `0x100` to `0x8000` |
+| Repeated-name binding that the k-th rule misses | 3 | Copies of one resource, where effects reuse earlier definitions. Per-child append cannot do that |
+| `source_bounds` minimum Y of `-0.0` with a positive maximum | 2 | No shape or script path produces this sign, so a direct field edit is inferred |
+| `source_bounds` minimum Y that `-box` translation rounds differently | 1 | `0.3 - 0.1` stored as exactly `0.2` |
+| Name map order of one resource (3 copies) | 3 | The only multi-name resource not in record order, not touched by the scripts |
+| `scrubber value_10` | 1 | Reproduced by `matlab-2012`, which makes this entry byte identical |
+| `brush marker` of 257 | 1 | Five brushes in one resource. The scripts copy these bytes unchanged, so an edit outside them is inferred |
+
+An entry can fall under several causes.
+
+These findings also corrected general rules, used by every profile:
+
+- Bare `source -city` stores `+0.0`, so `-city` with a stored `-0.0` minimum
+  now gets its own line before a `-box` that stores the sign.
+- A `-box` center keeps a `-0` component, because `-0 + -0` is the only sum
+  that stays negative. The game reading `-0` as negative zero is inferred from
+  the unary minus in Andrew Willmott's argscript.
+- `size`, `-screw`, and `-prob` multiply the parsed value directly in the
+  Windows parsers (`0x005998E0`, `0x0059A820`, `0x005989D0`), before any store
+  rounds it, so `size 16.8` stores exactly `840`.
+- A stored multi-sample emit curve with the inject or maintain bit is the mode
+  command followed by `emit -rate`, since `-rate` keeps the bit.
+- A shape-exclusive `source` keyword with bounds it cannot carry gets its own
+  `source` line, because flags accumulate and the last command sets the bounds.
+- An orphaned anonymous record after the last referenced one anchors on a
+  later effect that does not use that pool.
+

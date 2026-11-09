@@ -1,13 +1,14 @@
-# `collision`
+# `collide`
 
 Status: `Confirmed`
 
-`collision` enables particle collision behavior.
+`collide` enables particle collision behavior. It is registered as
+`collide`, and a `collision` line is rejected with `Unknown command`.
 
 ## Syntax
 
 ```fx
-collision [options...]
+collide [options...]
 ```
 
 ## Recovered options
@@ -23,4 +24,4 @@ collision [options...]
 ## Notes
 
 - valid only inside `particles`
-- collision defaults `bounce` to `0.3` when not explicitly provided
+- `collide` defaults `bounce` to `0.3` when not explicitly provided

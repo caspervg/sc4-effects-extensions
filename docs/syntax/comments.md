@@ -53,6 +53,11 @@ effect demo_fx
 end
 ```
 
+## Line comments
+
+`#` starts a line comment: `nSCRes::SplitIntoArguments` stops at the first
+`#` on the line, even inside quotes, so everything after it is ignored.
+
 ## Not confirmed
 
 These comment forms should not currently be assumed to work:
