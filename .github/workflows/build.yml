@@ -34,13 +34,13 @@ jobs:
             binary_dir: cmake-build-release-visual-studio
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           submodules: recursive
           fetch-depth: 0
           fetch-tags: true
 
-      - uses: actions/github-script@v8
+      - uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
         with:
           script: |
             core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
@@ -79,7 +79,7 @@ jobs:
           cmake --build --preset ${{ matrix.build_preset }} --parallel
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: SC4EffectsExtensions-${{ matrix.config }}-${{ github.sha }}
           compression-level: 0
