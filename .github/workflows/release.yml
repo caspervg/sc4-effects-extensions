@@ -6,7 +6,7 @@ on:
       - 'v*'
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
@@ -25,8 +25,8 @@ jobs:
         env:
           TAG_NAME: ${{ github.ref_name }}
         run: |
-          if [[ ! "$TAG_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Release tags must match vMAJOR.MINOR.PATCH, for example v0.1.0. Got: $TAG_NAME"
+          if [[ ! "$TAG_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "Release tags must match vMAJOR.MINOR.PATCH[-PRERELEASE], for example v0.1.0 or v0.1.0-rc.1. Got: $TAG_NAME"
             exit 1
           fi
 
@@ -42,7 +42,7 @@ jobs:
 
     steps:
       - name: Checkout full history
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 0
           fetch-tags: true
@@ -111,10 +111,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
         with:
           enable-cache: true
           cache-dependency-glob: "tools/effdir-editor/uv.lock"
@@ -135,13 +135,13 @@ jobs:
     runs-on: windows-2022
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           submodules: recursive
           fetch-depth: 0
           fetch-tags: true
 
-      - uses: actions/github-script@v8
+      - uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
         with:
           script: |
             core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
@@ -179,6 +179,14 @@ jobs:
           cmake --preset vs2022-win32-release
           cmake --build --preset vs2022-win32-release-build --parallel
 
+      - name: Generate SBOM (SPDX)
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          file: cmake-build-release-visual-studio/src/dll/Release/SC4EffectsExtensions.dll
+          format: spdx-json
+          output-file: SC4EffectsExtensions.spdx.json
+          upload-artifact: false
+
       - name: Package release asset
         shell: powershell
         run: |
@@ -188,6 +196,7 @@ jobs:
 
           Copy-Item "cmake-build-release-visual-studio/src/dll/Release/SC4EffectsExtensions.dll" -Destination $packageDir
           Copy-Item "dist/SC4EffectsExtensions.ini" -Destination $packageDir
+          Copy-Item "SC4EffectsExtensions.spdx.json" -Destination $packageDir
           Copy-Item "README.md" -Destination $packageDir
           Copy-Item "LICENSE" -Destination $packageDir
           Copy-Item "vendor/gzcom-dll/LICENSE" -Destination (Join-Path $packageDir "LICENSE-gzcom-dll")
@@ -197,10 +206,21 @@ jobs:
           Compress-Archive -Path (Join-Path $packageDir '*') -DestinationPath $archivePath
 
       - name: Upload release asset
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-assets-plugin
-          path: SC4EffectsExtensions-${{ github.ref_name }}-win32.zip
+          path: |
+            SC4EffectsExtensions-${{ github.ref_name }}-win32.zip
+            SC4EffectsExtensions.spdx.json
+          if-no-files-found: error
+
+      # Not a release asset. The publish job attests the DLL, so that the file in a plugins folder
+      # can be checked without the zip.
+      - name: Upload DLL for attestation
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: attest-plugin-dll
+          path: cmake-build-release-visual-studio/src/dll/Release/SC4EffectsExtensions.dll
           if-no-files-found: error
 
   package-effdir-editor:
@@ -232,10 +252,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
         with:
           enable-cache: true
           cache-dependency-glob: "tools/effdir-editor/uv.lock"
@@ -291,7 +311,7 @@ jobs:
         run: ditto -c -k --sequesterRsrc --keepParent dist/EFFDIR-Editor.app "${{ matrix.platform.archive }}"
 
       - name: Upload release assets
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-assets-effdir-${{ matrix.platform.name }}
           path: |
@@ -312,21 +332,70 @@ jobs:
       needs.detect-changes.outputs.any == 'true' &&
       needs.release-win32.result != 'failure' &&
       needs.package-effdir-editor.result != 'failure'
+    permissions:
+      contents: write
+      # For the signed attestations.
+      id-token: write
+      attestations: write
+      artifact-metadata: write
 
     steps:
       - name: Download release assets
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           pattern: release-assets-*
           path: release-artifacts
           merge-multiple: true
+
+      - name: Download DLL for attestation
+        if: needs.detect-changes.outputs.dll == 'true'
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: attest-plugin-dll
+          path: attest
+
+      # Build provenance: proves that this workflow built these files from this commit. Check a download
+      # with `gh attestation verify <file> --repo ${{ github.repository }}`.
+      - name: Attest build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: |
+            release-artifacts/*.zip
+            attest/*.dll
+
+      # Each SBOM is linked to the files it describes.
+      - name: Attest plugin SBOM
+        if: needs.detect-changes.outputs.dll == 'true'
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: |
+            release-artifacts/SC4EffectsExtensions-*.zip
+            attest/SC4EffectsExtensions.dll
+          sbom-path: release-artifacts/SC4EffectsExtensions.spdx.json
+
+      - name: Attest EFFDIR Editor SBOM (Windows)
+        if: hashFiles('release-artifacts/EFFDIR-Editor-windows-x64.zip') != ''
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: release-artifacts/EFFDIR-Editor-windows-x64.zip
+          sbom-path: release-artifacts/EFFDIR-Editor-windows-x64.cdx.json
+
+      - name: Attest EFFDIR Editor SBOM (macOS)
+        if: hashFiles('release-artifacts/EFFDIR-Editor-macos-arm64.zip') != ''
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: release-artifacts/EFFDIR-Editor-macos-arm64.zip
+          sbom-path: release-artifacts/EFFDIR-Editor-macos-arm64.cdx.json
 
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG_NAME: ${{ github.ref_name }}
         run: |
+          # A tag such as v0.1.0-rc.1 becomes a prerelease.
+          prerelease=()
+          if [[ "$TAG_NAME" == *-* ]]; then prerelease=(--prerelease); fi
           gh release create "$TAG_NAME" release-artifacts/* \
             --repo "${{ github.repository }}" \
             --title "$TAG_NAME" \
-            --generate-notes
+            --generate-notes "${prerelease[@]}"
